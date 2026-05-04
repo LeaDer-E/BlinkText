@@ -1,445 +1,203 @@
 # BlinkText
 
-BlinkText is a fast, local text expansion tool for Windows. It is built to expand text instantly, stay responsive during normal typing and paste-heavy workflows, and run fully offline with no cloud dependency.
-
-This repository contains the native Win32 C++ version of BlinkText, including:
-- the desktop application source code
-- the portable build workflow
-- the installer script
-- import and export support for compatible snippet tools
-
-## What BlinkText Does
-
-BlinkText lets you type short triggers such as `sig\` and automatically replace them with longer text. It is designed for fast typing, repeatable workflows, prompt templates, signatures, writing blocks, and reusable text snippets.
-
-Examples:
-- `sig\` -> your email signature
-- `addr\` -> your full address
-- `tr1\` -> a translation template
-- `sum\` -> a professional summary template
-
-Everything runs locally on your machine:
-- no telemetry
-- no account
-- no sync service
-- no online dependency
-
-## Main Features
-
-- Instant text expansion outside the app
-- Trigger expansion inside the built-in `Test Area`
-- Group-based snippet organization
-- Snippet enable / disable support
-- Notes and content preview
-- Global typing engine
-- Light mode and dark mode
-- Tray icon support
-- Start with Windows
-- Always on top
-- Minimize to tray
-- Recordable global toggle hotkey
-- Import from native BlinkText JSON
-- Import from Beeftext combos JSON
-- Export to native BlinkText JSON
-- Export to Beeftext combos JSON
-- Safe local saving with backup behavior
-- Optional clipboard-history style triggers:
-  - `\\`
-  - `//`
-
-## Application Layout
-
-BlinkText is organized into five main areas:
-
-### 1. Top Bar
-
-The top bar contains the main app actions:
-- `Engine ON/OFF`
-- `Theme`
-- `Import`
-- `Export`
-- `GitHub`
-- `Info`
-
-### 2. Groups
-
-The left panel is used for organizing snippets into groups.
-
-Available actions:
-- `New Group`
-- `Rename`
-- `Toggle`
-- `Delete`
-
-You can also right-click a group for quick actions.
-
-### 3. Test Area
-
-The `Test Area` is a built-in sandbox for testing triggers without leaving the app.
-
-Use it to:
-- verify imported snippets
-- test trigger behavior
-- test separator mode
-- test clipboard-based triggers
-
-### 4. Snippets
-
-The middle panel displays the current snippet list with the following columns:
-- `Trigger`
-- `Group`
-- `On`
-- `Notes`
-- `Preview`
-
-Supported actions:
-- select a snippet
-- search snippets
-- sort by column
-- duplicate
-- delete
-- toggle snippet state
-- edit the selected snippet
-- create a new snippet
-
-### 5. Snippets Manager
-
-The right panel is split into two tabs:
-- `Snippets Manager`
-- `Engine Settings`
-
-#### Snippets Manager Tab
-
-Used to create or edit:
-- trigger
-- group
-- enabled state
-- notes
-- content
-
-Buttons:
-- `New`
-- `Save`
-- `Reset`
-
-#### Engine Settings Tab
-
-Contains:
-- `Restore clipboard (ms)`
-- current global hotkey
-- `Record Hotkey`
-- `Always on top`
-- `Start with Windows`
-- `Minimize to tray`
-- `Use \\ for previous clipboard item`
-- `Use // for previous clipboard item`
-- `Case sensitive matching`
-- trigger mode selection
-- separator key selection
-- `Save Settings`
-- `Reset Settings`
-
-## Trigger Modes
-
-BlinkText supports two trigger modes.
-
-### Instant
-
-The snippet expands immediately once the trigger is fully typed.
-
-### Separator
-
-The snippet expands only after a separator key is pressed.
-
-Supported separator keys:
-- `Space`
-- `Enter`
-- `Tab`
-
-## Clipboard-Based Triggers
-
-BlinkText includes two optional built-in triggers:
-- `\\`
-- `//`
-
-When enabled from `Engine Settings`, these triggers paste a previously copied clipboard item instead of behaving like normal snippets.
-
-Important behavior:
-- if enabled, the built-in behavior takes priority over a custom snippet with the same trigger
-- clipboard history is based on what BlinkText observes while it is running
-- the feature is meant for local recent clipboard reuse, not full Windows clipboard manager replacement
-
-## Search Behavior
-
-The snippet search is focused on snippet content, not group navigation.
-
-Search works against:
-- trigger
-- notes
-- content preview
-
-Search does not depend on group names, because group filtering is already handled by the Groups panel.
-
-## Import
-
-BlinkText supports importing from:
-- `Native BlinkText JSON`
-- `Beeftext combos JSON`
-
-Import dialog capabilities:
-- select a file
-- browse for another file
-- choose destination behavior
-- keep source groups
-- import into a selected group
-- skip conflicts
-- overwrite conflicts
-
-`Import into` is a controlled dropdown list, not a free text field.
-
-## Export
-
-BlinkText supports exporting to:
-- `Native BlinkText JSON`
-- `Beeftext combos JSON`
-
-Export scope:
-- all snippets
-- current group only
-
-Default export location:
-- Windows `Documents`
-
-Suggested file naming:
-- `BlinkText-D-M-Y-H-M.json`
-- `BlinkText-BeefText-D-M-Y-H-M.json`
-
-## Tray Behavior
-
-BlinkText keeps a tray icon available during runtime.
-
-Tray behavior includes:
-- always-visible tray icon while the app is running
-- minimize to tray
-- restore from tray
-- paused tray icon support
-- tray menu actions
-
-If the engine is paused, BlinkText can use `app_pause.ico` for the tray icon.
-
-## Global Hotkey
-
-Default global toggle hotkey:
-- `Ctrl + Shift + F12`
-
-You can change it directly from the UI using `Record Hotkey`.
-
-## Context Menus
-
-BlinkText uses themed context menus that follow the current app theme.
-
-Standard editing actions include:
-- Undo
-- Cut
-- Copy
-- Paste
-- Delete
-- Select All
-
-Additional advanced text options:
-- Right to left Reading order
-- Show Unicode control characters
-- Insert Unicode control character
-- Open IME
-- Reconversion
-
-## Appearance and Themes
-
-BlinkText supports:
-- `Light mode`
-- `Dark mode`
-
-The UI is designed to keep a consistent style across:
-- buttons
-- snippet list
-- group list
-- editor fields
-- dialogs
-- pop-up menus
-- engine settings controls
-
-## Data Storage and Safety
-
-BlinkText stores its data locally in JSON files.
-
-Safety behavior includes:
-- temporary file write before replacement
-- backup behavior
-- local-only storage
-- no online sync
-
-This helps protect snippet data during saves and updates.
-
-## Privacy
-
-BlinkText is fully offline by design.
-
-Privacy guarantees:
-- no user data is collected
-- no user data is stored remotely
-- no user data is transmitted
-- no account or login is required
-
-## Compatibility
-
-BlinkText is intended for Windows desktop use.
-
-It supports importing exported triggers from Beeftext for easier migration.
-
-## About Window Content
-
-The current `Info` / `About` section uses the following app information:
-
-```text
-BlinkText v1.0
 Fast, local text expansion tool designed for instant, reliable typing with zero delay.
 
-Key Features
-- Instant expansion without paste conflicts
-- No trigger duplication during rapid input (e.g. Ctrl+V after trigger)
-- Fully offline - no data collection
-- Lightweight and optimized for speed
-- Supports importing exported triggers from compatible tools
+---
 
-Compatibility
-- Supports importing exported triggers from Beeftext for seamless migration
+## 🚀 Download
 
-Privacy
-- No user data is collected, stored, or transmitted
+👉 **Get the latest version:**
+https://github.com/LeaDer-E/BlinkText/releases/latest
 
-Developer
-- Developed by: Eslam Mustafa
-- Contact: Eslam.Youssef@protonmail.com / Eslam.G.Youssef@gmail.com
-- GitHub: https://github.com/LeaDer-E
+### Available Versions
+
+* **Portable** → Run directly, no installation required
+* **Installer** → Standard Windows setup
+
+---
+
+## ✨ Overview
+
+BlinkText is a fast, local text expansion tool for Windows. It expands text instantly, remains responsive during normal typing and paste-heavy workflows, and runs fully offline with no cloud dependency.
+
+This repository contains:
+
+* Native Win32 C++ application
+* Portable build workflow
+* Installer script
+* Import/export support for compatible tools
+
+---
+
+## ⚡ What BlinkText Does
+
+BlinkText lets you type short triggers such as:
+
+```text
+sig\  -> email signature  
+addr\ -> full address  
+tr1\  -> translation template  
+sum\  -> professional summary  
 ```
 
-## Build
+Everything runs locally:
 
-### Recommended Portable Build
+* No telemetry
+* No account
+* No sync
+* No internet required
 
-The easiest way to build the portable version is to use:
+---
+
+## 🔥 Key Features
+
+* Instant text expansion outside the app
+* No trigger duplication during rapid input
+* Built-in Test Area
+* Group-based snippet organization
+* Enable / disable snippets
+* Global typing engine
+* Light / Dark mode
+* Tray support
+* Start with Windows
+* Global hotkey support
+* Import / Export (BlinkText & Beeftext)
+* Clipboard-based triggers (`\\` and `//`)
+
+---
+
+## 🧠 AI Contribution
+
+This project was developed with the assistance of AI tools for:
+
+* architecture design
+* debugging
+* performance improvements
+* UI and system behavior refinement
+
+The final implementation, structure, and integration were directed and validated manually.
+
+---
+
+## 🖥️ How to Use
+
+### Portable
+
+1. Download the portable version
+2. Extract the ZIP
+3. Run `BlinkText.exe`
+
+### Installer
+
+1. Download the setup
+2. Run installer
+3. Follow instructions
+
+---
+
+## 📦 Import / Export
+
+Supported formats:
+
+* BlinkText JSON
+* Beeftext combos JSON
+
+Options:
+
+* Import into group
+* Overwrite / skip conflicts
+* Export all or by group
+
+---
+
+## 🔒 Privacy
+
+BlinkText is fully offline.
+
+* No data collection
+* No remote storage
+* No tracking
+* No login
+
+---
+
+## 🛠️ Built With
+
+* C++
+* Win32 API
+* GDI+
+
+---
+
+## ⚙️ Build
+
+### Portable Build
 
 ```bat
-src\01 - build_portable.bat
+src\build_portable.bat
 ```
 
-This script:
-- compiles resources
-- builds the executable
-- outputs a portable EXE under:
+Output:
 
 ```text
 src\dist\BlinkText-Portable\BlinkText.exe
 ```
 
-### Portable Build Details
+---
 
-The batch script builds:
-- `main.cpp`
-- `AppWindow.cpp`
-- `SimpleJson.cpp`
-- `BlinkText.rc`
-
-And links against the required Windows libraries, including:
-- `user32`
-- `gdi32`
-- `comdlg32`
-- `shell32`
-- `comctl32`
-- `uxtheme`
-- `dwmapi`
-- `ole32`
-- `uuid`
-- `gdiplus`
-- `imm32`
-
-### Manual Build Example
-
-If you want to build manually with MinGW:
+### Manual Build
 
 ```powershell
 windres src\BlinkText.rc -O coff -o build\resource.o
+
 g++ -std=c++17 -O2 -Wall -Wextra `
-  -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX `
-  src\main.cpp src\AppWindow.cpp src\SimpleJson.cpp build\resource.o `
-  -o build\BlinkText.exe `
-  -mwindows `
-  -luser32 -lgdi32 -lcomdlg32 -lshell32 -lcomctl32 `
-  -luxtheme -ldwmapi -lole32 -luuid -lgdiplus -limm32
+ -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX `
+ src\main.cpp src\AppWindow.cpp src\SimpleJson.cpp build\resource.o `
+ -o build\BlinkText.exe `
+ -mwindows `
+ -luser32 -lgdi32 -lcomdlg32 -lshell32 -lcomctl32 `
+ -luxtheme -ldwmapi -lole32 -luuid -lgdiplus -limm32
 ```
 
-## Installer
+---
 
-The Inno Setup installer script is included here:
+## 📦 Installer
 
 ```text
-src\02 - BlinkText_Installer.iss
+src\BlinkText_Installer.iss
 ```
 
-Compile it with Inno Setup Compiler to generate the installer.
+Compile using **Inno Setup**.
 
-Important current setup details:
-- app name: `BlinkText`
-- app version: `1.0.0`
-- output filename: `BlinkText_Setup_v1.0.0.exe`
+---
 
-## Assets
-
-Application assets are stored in:
+## 📁 Project Structure
 
 ```text
-src\assets
-```
-
-Important files:
-- `app.ico`
-- `app_pause.ico`
-- `github.png`
-- `info.png`
-- `icon.png`
-
-## Project Structure
-
-```text
-BlinkText_cpp/
+BlinkText/
   src/
     assets/
-      app.ico
-      app_pause.ico
-      github.png
-      info.png
-      icon.png
-    01 - build_portable.bat
-    02 - BlinkText_Installer.iss
+    build_portable.bat
+    BlinkText_Installer.iss
+    main.cpp
     AppWindow.cpp
     AppWindow.h
-    BlinkText.rc
-    main.cpp
-    resource.h
     SimpleJson.cpp
     SimpleJson.h
+    resource.h
+    BlinkText.rc
   README.md
 ```
 
-## Developer
+---
 
-- Developed by: Eslam Mustafa
-- Contact: Eslam.Youssef@protonmail.com
-- Contact: Eslam.G.Youssef@gmail.com
-- GitHub: https://github.com/LeaDer-E
+## 👨‍💻 Developer
 
-## Notes
+Eslam Mustafa
+https://github.com/LeaDer-E
 
-- BlinkText is built to stay lightweight, local-first, and responsive.
-- The portable build workflow and installer workflow are both included in this repository.
-- A Python-based reference version can be maintained separately if needed for legacy comparison or experimentation.
+---
+
+## 📄 License
+
+MIT License
