@@ -1,4 +1,4 @@
-# BlinkText
+# BlinkText – Fast Local Text Expansion Tool (Beeftext Alternative)
 
 Fast, local text expansion tool designed for instant, reliable typing with zero delay.
 
