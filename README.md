@@ -133,8 +133,7 @@ Examples:
 
 Full documentation:
 
-- [VARIABLES.md](./VARIABLES.md)
-- [Wiki / Variables](./Wiki/VARIABLES.md)
+- [Wiki / Variables](./Wiki/Variables.md)
 
 ## Application Layout
 
@@ -462,15 +461,22 @@ g++ -std=c++17 -O2 -Wall -Wextra `
 Project documentation currently includes:
 
 - [README.md](./README.md)
-- [VARIABLES.md](./VARIABLES.md)
 - [Wiki / Home](./Wiki/Home.md)
-- [Wiki / Variables](./Wiki/VARIABLES.md)
+- [Wiki / Variables](./Wiki/Variables.md)
 - [Wiki / Import and Export](./Wiki/Import%20and%20Export.md)
 - [Wiki / Trigger Modes](./Wiki/Trigger%20Modes.md)
 - [Wiki / Clipboard Features](./Wiki/Clipboard%20Features.md)
 - [Wiki / Compatibility with Beeftext](./Wiki/Compatibility%20with%20Beeftext.md)
 - [Wiki / Building BlinkText](./Wiki/Building%20BlinkText.md)
 - [Wiki / FAQ](./Wiki/FAQ.md)
+
+## Release Version Source
+
+Portable and installer version metadata are now driven from one file:
+
+- `00 - BlinkText_Version.issinc`
+
+This helps keep release naming and installer metadata in sync.
 
 ## Privacy
 
@@ -503,6 +509,7 @@ Important files:
 
 ```text
 BlinkText/
+  00 - BlinkText_Version.issinc
   01 - build_portable.bat
   02 - BlinkText_Installer.iss
   CMakeLists.txt
