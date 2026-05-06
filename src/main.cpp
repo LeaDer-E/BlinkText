@@ -152,14 +152,19 @@ void ShowSplash(HINSTANCE hInstance) {
 }
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int command_show) {
+    InitializeDiagnosticsConsole();
+    InstallDiagnosticsHandlers();
+    DiagnosticsLog(L"Diagnostics console initialized.");
     ShowSplash(instance);
 
     AppWindow window;
     if (!window.Create(instance)) {
+        DiagnosticsLog(L"AppWindow::Create failed.");
         return -1;
     }
 
     window.Show(command_show);
+    DiagnosticsLog(L"BlinkText window shown. Entering message loop.");
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0)) {
@@ -171,5 +176,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int command_show) {
         DispatchMessageW(&message);
     }
 
+    DiagnosticsLog(L"Message loop exited.");
     return static_cast<int>(message.wParam);
 }

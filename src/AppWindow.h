@@ -16,6 +16,10 @@ namespace simplejson {
 struct Value;
 }
 
+void InitializeDiagnosticsConsole();
+void InstallDiagnosticsHandlers();
+void DiagnosticsLog(const std::wstring& text);
+
 class AppWindow {
 public:
     bool Create(HINSTANCE instance);
@@ -62,6 +66,7 @@ private:
         int right_panel_width = 305;
         int groups_panel_height = 248;
         std::wstring last_group_filter;
+        std::wstring last_io_directory;
         int snippet_sort_column = 0;
         bool snippet_sort_ascending = true;
     };
@@ -85,6 +90,37 @@ public:
     struct ExportOptions {
         bool beeftext_format = false;
         bool current_group_only = false;
+    };
+
+    enum class ExpansionActionType {
+        Text,
+        Key,
+        Shortcut,
+        Delay,
+        CursorMarker,
+    };
+
+    struct ExpansionAction {
+        ExpansionActionType type = ExpansionActionType::Text;
+        std::wstring text;
+        UINT modifiers = 0;
+        UINT vk_code = 0;
+        DWORD delay_ms = 0;
+        bool use_original_clipboard_paste = false;
+    };
+
+    struct ExpansionPlan {
+        std::vector<ExpansionAction> actions;
+        int cursor_relative_move = 0;
+        int cursor_relative_move_external = 0;
+        bool aborted = false;
+    };
+
+    struct ExpansionResolveContext {
+        std::wstring clipboard_text;
+        std::wstring previous_clipboard_text;
+        int recursion_depth = 0;
+        bool aborted = false;
     };
 
 private:
@@ -191,6 +227,18 @@ private:
     void ExpandSnippetExternally(const Snippet& snippet, int delete_count = -1);
     void PostStatusText(std::wstring text) const;
     bool ReplaceTrailingPreviousClipboardTrigger(std::wstring& text) const;
+    bool BuildExpansionPlan(const Snippet& snippet, ExpansionPlan& plan, const std::wstring& clipboard_text, const std::wstring& previous_clipboard_text) const;
+    bool AppendResolvedContent(const std::wstring& content, ExpansionPlan& plan, ExpansionResolveContext& context) const;
+    bool ResolveVariableToken(const std::wstring& token_text, ExpansionPlan& plan, ExpansionResolveContext& context) const;
+    bool ResolveComboVariable(const std::wstring& trigger, ExpansionPlan& plan, ExpansionResolveContext& context, const std::wstring& transform_name = L"") const;
+    bool ResolvePowerShellVariable(const std::wstring& payload, std::wstring& output) const;
+    void FinalizeExpansionPlan(ExpansionPlan& plan) const;
+    std::wstring RenderExpansionPlanForTestArea(const ExpansionPlan& plan, size_t* caret_position = nullptr) const;
+    void ShowVariablesAboutDialog() const;
+    bool ShowVariableKeyDialog(bool shortcut_mode, std::wstring& captured_text) const;
+    bool ShowVariableLabelDialog(const std::wstring& title, const std::wstring& prompt, std::wstring& value) const;
+    bool BrowseForPowerShellScript(std::wstring& selected_path) const;
+    bool IsReservedAppShortcut(UINT modifiers, UINT vk_code) const;
     std::wstring CurrentGroupFilter() const;
     int CurrentGroupVectorIndex() const;
     std::wstring CurrentEditorGroupSelection() const;
@@ -198,7 +246,7 @@ private:
     void WriteWindowText(HWND control, const std::wstring& value) const;
     static std::wstring ToLowerCopy(std::wstring value);
     bool SnippetMatchesCurrentFilter(const Snippet& snippet) const;
-    bool ReplaceTrailingTrigger(std::wstring& text) const;
+    bool ReplaceTrailingTrigger(std::wstring& text, size_t* caret_position = nullptr) const;
     bool IsGroupEnabled(const std::wstring& group_name) const;
     bool IsSeparatorEnabled(const std::wstring& separator_name) const;
     void EnsureGroupExists(const std::wstring& group_name);
@@ -239,9 +287,14 @@ private:
     static std::string ReadFileBytes(const std::wstring& path);
     static bool WriteFileBytesAtomically(const std::wstring& path, const std::string& bytes);
     static bool ParseHotkeyString(const std::wstring& hotkey, UINT& modifiers, UINT& vk_code);
+    static bool ParseVariableKeyString(const std::wstring& key_name, UINT& vk_code);
     static std::wstring TrimCopy(const std::wstring& value);
     static bool IsModifierVirtualKey(UINT vk_code);
     static std::wstring HotkeyKeyName(UINT vk_code);
+    static std::wstring UnescapeVariableText(const std::wstring& value);
+    static bool TryFormatDateTimeText(const std::wstring& format, std::wstring& output);
+    static void SendVirtualKeyPress(UINT vk_code);
+    static void SendShortcutChord(UINT modifiers, UINT vk_code);
     bool TriggersEqual(const std::wstring& left, const std::wstring& right) const;
     std::wstring NormalizeTriggerForCompare(const std::wstring& trigger) const;
     std::wstring BuildHotkeyString(UINT modifiers, UINT vk_code) const;
@@ -373,6 +426,7 @@ private:
     NOTIFYICONDATAW tray_icon_data_{};
     bool tray_icon_added_ = false;
     bool is_minimized_to_tray_ = false;
+    bool quit_requested_from_tray_ = false;
     RECT left_vertical_splitter_rect_{};
     RECT right_vertical_splitter_rect_{};
     RECT left_horizontal_splitter_rect_{};

@@ -6,14 +6,19 @@
 #include <cmath>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <dwmapi.h>
+#include <exception>
 #include <gdiplus.h>
 #include <imm.h>
+#include <io.h>
 #include <objidl.h>
+#include <fcntl.h>
 #include <memory>
+#include <mutex>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <string>
@@ -61,6 +66,27 @@ constexpr UINT kEditMenuInsertLri = 6225;
 constexpr UINT kEditMenuInsertRli = 6226;
 constexpr UINT kEditMenuInsertFsi = 6227;
 constexpr UINT kEditMenuInsertPdi = 6228;
+constexpr UINT kEditMenuVariables = 6230;
+constexpr UINT kEditMenuVariableClipboard = 6231;
+constexpr UINT kEditMenuVariablePreviousClipboard = 6232;
+constexpr UINT kEditMenuVariableDateTime = 6233;
+constexpr UINT kEditMenuVariableDate = 6234;
+constexpr UINT kEditMenuVariableTime = 6235;
+constexpr UINT kEditMenuVariableDateAndTime = 6236;
+constexpr UINT kEditMenuVariableCustomDateTime = 6237;
+constexpr UINT kEditMenuVariableKey = 6238;
+constexpr UINT kEditMenuVariableShortcut = 6239;
+constexpr UINT kEditMenuVariableDelay = 6240;
+constexpr UINT kEditMenuVariableCursor = 6241;
+constexpr UINT kEditMenuVariableCombo = 6242;
+constexpr UINT kEditMenuVariableComboPlain = 6243;
+constexpr UINT kEditMenuVariableComboTrim = 6244;
+constexpr UINT kEditMenuVariableComboUpper = 6245;
+constexpr UINT kEditMenuVariableComboLower = 6246;
+constexpr UINT kEditMenuVariableEnvVar = 6247;
+constexpr UINT kEditMenuVariablePowerShell = 6248;
+constexpr UINT kEditMenuVariableInput = 6249;
+constexpr UINT kEditMenuVariablesAbout = 6250;
 constexpr const wchar_t* kWindowIconCandidates[] = {L"app.ico", L"icon.ico"};
 constexpr const wchar_t* kTrayPauseIconCandidates[] = {L"app_pause.ico", L"App_Pause.ico"};
 constexpr wchar_t kGithubButtonImageName[] = L"github.png";
@@ -79,6 +105,196 @@ constexpr int kFixedRightPanelWidth = 305;
 constexpr int kPanelGap = 11;
 constexpr int kCardRadius = 11;
 constexpr double kMainUiScale = 0.75;
+constexpr bool kEnableDiagnosticsConsole = false;
+constexpr bool kEnableDiagnosticsFileLog = true;
+
+std::atomic<bool> g_diagnostics_console_initialized{false};
+std::mutex g_diagnostics_log_mutex;
+std::wstring g_diagnostics_log_file_path;
+
+std::wstring BuildDiagnosticsPrefix() {
+    SYSTEMTIME local_time{};
+    GetLocalTime(&local_time);
+
+    wchar_t buffer[128] = {};
+    swprintf_s(
+        buffer,
+        L"[%02u:%02u:%02u.%03u][T%lu] ",
+        static_cast<unsigned>(local_time.wHour),
+        static_cast<unsigned>(local_time.wMinute),
+        static_cast<unsigned>(local_time.wSecond),
+        static_cast<unsigned>(local_time.wMilliseconds),
+        static_cast<unsigned long>(GetCurrentThreadId()));
+    return std::wstring(buffer);
+}
+
+std::wstring FormatPointerValue(const void* pointer_value) {
+    wchar_t buffer[32] = {};
+    swprintf_s(buffer, L"0x%p", pointer_value);
+    return std::wstring(buffer);
+}
+
+std::wstring FormatExceptionCodeText(DWORD exception_code) {
+    wchar_t buffer[32] = {};
+    swprintf_s(buffer, L"0x%08lX", static_cast<unsigned long>(exception_code));
+    return std::wstring(buffer);
+}
+
+std::wstring LossyWideFromUtf8OrAnsi(const char* text) {
+    if (text == nullptr || *text == '\0') {
+        return L"";
+    }
+
+    const int utf8_length = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+    if (utf8_length > 0) {
+        std::wstring result(static_cast<size_t>(utf8_length - 1), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), utf8_length);
+        return result;
+    }
+
+    const int ansi_length = MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
+    if (ansi_length > 0) {
+        std::wstring result(static_cast<size_t>(ansi_length - 1), L'\0');
+        MultiByteToWideChar(CP_ACP, 0, text, -1, result.data(), ansi_length);
+        return result;
+    }
+
+    return L"<unavailable>";
+}
+
+std::string Utf8FromWide(const std::wstring& text) {
+    if (text.empty()) {
+        return std::string();
+    }
+
+    const int utf8_length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (utf8_length <= 0) {
+        return std::string();
+    }
+
+    std::string result(static_cast<size_t>(utf8_length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), result.data(), utf8_length, nullptr, nullptr);
+    return result;
+}
+
+std::wstring ToLowerSimple(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    return value;
+}
+
+std::wstring MapUnicodeCase(const std::wstring& value, DWORD map_flags) {
+    if (value.empty()) {
+        return value;
+    }
+
+    const int required = LCMapStringEx(
+        LOCALE_NAME_USER_DEFAULT,
+        map_flags,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr,
+        0);
+    if (required > 0) {
+        std::wstring mapped(static_cast<size_t>(required), L'\0');
+        const int written = LCMapStringEx(
+            LOCALE_NAME_USER_DEFAULT,
+            map_flags,
+            value.data(),
+            static_cast<int>(value.size()),
+            mapped.data(),
+            required,
+            nullptr,
+            nullptr,
+            0);
+        if (written > 0) {
+            mapped.resize(static_cast<size_t>(written));
+            return mapped;
+        }
+    }
+
+    std::wstring fallback = value;
+    const bool make_upper = (map_flags & LCMAP_UPPERCASE) != 0;
+    std::transform(fallback.begin(), fallback.end(), fallback.begin(), [make_upper](wchar_t ch) {
+        return static_cast<wchar_t>(make_upper ? towupper(ch) : towlower(ch));
+    });
+    return fallback;
+}
+
+std::wstring GetProcessBaseNameForWindow(HWND hwnd) {
+    if (hwnd == nullptr) {
+        return L"";
+    }
+
+    DWORD process_id = 0;
+    GetWindowThreadProcessId(hwnd, &process_id);
+    if (process_id == 0) {
+        return L"";
+    }
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+    if (process == nullptr) {
+        return L"";
+    }
+
+    wchar_t path_buffer[MAX_PATH * 2] = {};
+    DWORD length = static_cast<DWORD>(std::size(path_buffer));
+    std::wstring base_name;
+    if (QueryFullProcessImageNameW(process, 0, path_buffer, &length) && length > 0) {
+        std::wstring full_path(path_buffer, path_buffer + length);
+        const size_t slash = full_path.find_last_of(L"\\/");
+        base_name = slash == std::wstring::npos ? full_path : full_path.substr(slash + 1);
+    }
+    CloseHandle(process);
+    return base_name;
+}
+
+bool IsNavigationVirtualKey(UINT vk_code) {
+    switch (vk_code) {
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void SendUnicodeTextInput(const std::wstring& text) {
+    for (size_t index = 0; index < text.size(); ++index) {
+        const wchar_t ch = text[index];
+        if (ch == L'\r') {
+            continue;
+        }
+        if (ch == L'\n') {
+            INPUT inputs[2] = {};
+            inputs[0].type = INPUT_KEYBOARD;
+            inputs[0].ki.wVk = VK_RETURN;
+            inputs[1].type = INPUT_KEYBOARD;
+            inputs[1].ki.wVk = VK_RETURN;
+            inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(2, inputs, sizeof(INPUT));
+            continue;
+        }
+
+        INPUT inputs[2] = {};
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].ki.wScan = ch;
+        inputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
+        inputs[1] = inputs[0];
+        inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        SendInput(2, inputs, sizeof(INPUT));
+    }
+}
 
 int ScaleMainUi(int value) {
     return std::max(1, static_cast<int>(std::lround(static_cast<double>(value) * kMainUiScale)));
@@ -91,6 +307,14 @@ std::wstring GetDocumentsDirectory() {
         return std::wstring(documents_path);
     }
     return std::wstring();
+}
+
+std::wstring DirectoryFromPath(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return std::wstring();
+    }
+    return path.substr(0, slash);
 }
 
 POINT GetEffectiveMinimumWindowSizeForMonitor(const MONITORINFO& monitor_info) {
@@ -122,6 +346,131 @@ POINT GetEffectiveMinimumWindowSize(HWND hwnd) {
     }
 
     return POINT{kMinWindowWidth, kMinWindowHeight};
+}
+
+void EnsureDiagnosticsLogPathInitialized() {
+    if (!g_diagnostics_log_file_path.empty()) {
+        return;
+    }
+
+    wchar_t module_path[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, module_path, static_cast<DWORD>(std::size(module_path))) > 0) {
+        std::wstring full_path(module_path);
+        const size_t slash = full_path.find_last_of(L"\\/");
+        const std::wstring directory = slash == std::wstring::npos ? L"." : full_path.substr(0, slash);
+        g_diagnostics_log_file_path = directory + L"\\BlinkText_diagnostics.log";
+    } else {
+        g_diagnostics_log_file_path = L"BlinkText_diagnostics.log";
+    }
+}
+
+void InitializeDiagnosticsConsole() {
+    if (!kEnableDiagnosticsConsole && !kEnableDiagnosticsFileLog) {
+        return;
+    }
+
+    EnsureDiagnosticsLogPathInitialized();
+
+    if (!kEnableDiagnosticsConsole) {
+        g_diagnostics_console_initialized.store(true);
+        return;
+    }
+
+    bool expected = false;
+    if (!g_diagnostics_console_initialized.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    if (!AllocConsole()) {
+        return;
+    }
+
+    SetConsoleTitleW(L"BlinkText Diagnostics");
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
+    FILE* stream = nullptr;
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+    freopen_s(&stream, "CONIN$", "r", stdin);
+    _setmode(_fileno(stdout), _O_U16TEXT);
+    _setmode(_fileno(stderr), _O_U16TEXT);
+
+    HANDLE output_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (output_handle != nullptr && output_handle != INVALID_HANDLE_VALUE) {
+        const std::wstring banner = L"BlinkText diagnostics console is active.\r\n";
+        DWORD written = 0;
+        WriteConsoleW(output_handle, banner.c_str(), static_cast<DWORD>(banner.size()), &written, nullptr);
+    }
+}
+
+void DiagnosticsLog(const std::wstring& text) {
+    if (!kEnableDiagnosticsConsole && !kEnableDiagnosticsFileLog) {
+        return;
+    }
+    if (!g_diagnostics_console_initialized.load()) {
+        return;
+    }
+
+    const std::wstring line = BuildDiagnosticsPrefix() + text + L"\r\n";
+    {
+        std::lock_guard<std::mutex> guard(g_diagnostics_log_mutex);
+        if (kEnableDiagnosticsConsole) {
+            HANDLE output_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (output_handle != nullptr && output_handle != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteConsoleW(output_handle, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr);
+            }
+        }
+
+        if (kEnableDiagnosticsFileLog && !g_diagnostics_log_file_path.empty()) {
+            HANDLE log_handle = CreateFileW(
+                g_diagnostics_log_file_path.c_str(),
+                FILE_APPEND_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                nullptr,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (log_handle != INVALID_HANDLE_VALUE) {
+                const std::string utf8_line = Utf8FromWide(line);
+                if (!utf8_line.empty()) {
+                    DWORD written = 0;
+                    WriteFile(log_handle, utf8_line.data(), static_cast<DWORD>(utf8_line.size()), &written, nullptr);
+                }
+                CloseHandle(log_handle);
+            }
+        }
+    }
+
+    if (kEnableDiagnosticsConsole) {
+        OutputDebugStringW(line.c_str());
+    }
+}
+
+LONG WINAPI DiagnosticsUnhandledExceptionFilter(EXCEPTION_POINTERS* exception_pointers) {
+    if (exception_pointers != nullptr && exception_pointers->ExceptionRecord != nullptr) {
+        const EXCEPTION_RECORD* record = exception_pointers->ExceptionRecord;
+        DiagnosticsLog(
+            L"Unhandled exception. code=" + FormatExceptionCodeText(record->ExceptionCode) +
+            L", address=" + FormatPointerValue(record->ExceptionAddress));
+    } else {
+        DiagnosticsLog(L"Unhandled exception. No exception record available.");
+    }
+    Sleep(8000);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void InstallDiagnosticsHandlers() {
+    if (!kEnableDiagnosticsConsole && !kEnableDiagnosticsFileLog) {
+        return;
+    }
+
+    SetUnhandledExceptionFilter(DiagnosticsUnhandledExceptionFilter);
+    std::set_terminate([]() {
+        DiagnosticsLog(L"std::terminate was invoked.");
+        TerminateProcess(GetCurrentProcess(), 3);
+    });
 }
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -189,6 +538,9 @@ enum ControlId : int {
 };
 
 constexpr wchar_t kTemporaryGithubUrl[] = L"https://github.com/LeaDer-E/BlinkText";
+constexpr wchar_t kBlinkTextWikiUrl[] = L"https://github.com/LeaDer-E/BlinkText/wiki";
+constexpr wchar_t kVariablesWikiUrl[] = L"https://github.com/LeaDer-E/BlinkText/wiki/Variables";
+constexpr int kExpansionComboMaxDepth = 5;
 
 HWND CreateControl(
     DWORD ex_style,
@@ -360,6 +712,7 @@ constexpr int kTextEntryDialogHeight = 224;
 constexpr int kTextEntryEditId = 7201;
 constexpr int kTextEntryOkId = 7202;
 constexpr int kTextEntryCancelId = 7203;
+constexpr int kTextEntryIconId = 7204;
 constexpr int kDeleteGroupDialogWidth = 690;
 constexpr int kDeleteGroupDialogHeight = 326;
 constexpr int kDeleteGroupTargetComboId = 7301;
@@ -376,6 +729,13 @@ constexpr int kExportDialogExportButtonId = 7405;
 constexpr int kExportDialogCancelButtonId = 7406;
 constexpr int kExportDialogFormatGroupId = 7407;
 constexpr int kExportDialogScopeGroupId = 7408;
+constexpr DWORD kExpansionTextActionCompletionDelayMs = 25;
+constexpr DWORD kExpansionKeyPreDelayMs = 15;
+constexpr DWORD kExpansionKeyPostDelayMs = 25;
+constexpr DWORD kExpansionActionInterDelayMs = 15;
+constexpr DWORD kExpansionTargetFocusSettleDelayMs = 50;
+constexpr DWORD kWordExpansionTextActionCompletionDelayMs = 45;
+constexpr DWORD kWordExpansionNavigationKeyPostDelayMs = 70;
 
 struct TextEntryDialogConfig {
     std::wstring title;
@@ -383,6 +743,11 @@ struct TextEntryDialogConfig {
     std::wstring initial_value;
     std::wstring ok_button_label = L"OK";
     bool dark_theme = false;
+    bool multiline = false;
+    bool trim_result = true;
+    bool show_app_icon = false;
+    int width = 0;
+    int height = 0;
 };
 
 struct TextEntryDialogResult {
@@ -394,6 +759,38 @@ struct TextEntryDialogState {
     HINSTANCE instance = nullptr;
     const TextEntryDialogConfig* config = nullptr;
     TextEntryDialogResult* result = nullptr;
+    HWND hwnd = nullptr;
+    HWND edit = nullptr;
+    HFONT font = nullptr;
+    HFONT title_font = nullptr;
+    HBRUSH background_brush = nullptr;
+    HBRUSH input_brush = nullptr;
+    HBRUSH surface_brush = nullptr;
+    bool finished = false;
+};
+
+constexpr int kVariableCaptureDialogWidth = 560;
+constexpr int kVariableCaptureDialogHeight = 260;
+constexpr int kVariableCaptureEditId = 7211;
+constexpr int kVariableCaptureOkId = 7212;
+constexpr int kVariableCaptureCancelId = 7213;
+
+struct VariableCaptureDialogConfig {
+    std::wstring title;
+    std::wstring prompt;
+    bool dark_theme = false;
+    bool shortcut_mode = false;
+};
+
+struct VariableCaptureDialogResult {
+    bool accepted = false;
+    std::wstring text;
+};
+
+struct VariableCaptureDialogState {
+    HINSTANCE instance = nullptr;
+    const VariableCaptureDialogConfig* config = nullptr;
+    VariableCaptureDialogResult* result = nullptr;
     HWND hwnd = nullptr;
     HWND edit = nullptr;
     HFONT font = nullptr;
@@ -709,24 +1106,166 @@ std::wstring ReadUnicodeClipboardText() {
 }
 
 bool WriteUnicodeClipboardText(const std::wstring& text) {
-    if (!OpenClipboard(nullptr)) {
-        return false;
-    }
-
-    EmptyClipboard();
+    DiagnosticsLog(L"WriteUnicodeClipboardText requested. length=" + std::to_wstring(text.size()));
     const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
     HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
     if (handle == nullptr) {
-        CloseClipboard();
+        DiagnosticsLog(L"WriteUnicodeClipboardText failed: GlobalAlloc returned null.");
         return false;
     }
 
     void* memory = GlobalLock(handle);
+    if (memory == nullptr) {
+        GlobalFree(handle);
+        DiagnosticsLog(L"WriteUnicodeClipboardText failed: GlobalLock returned null.");
+        return false;
+    }
     memcpy(memory, text.c_str(), bytes);
     GlobalUnlock(handle);
-    SetClipboardData(CF_UNICODETEXT, handle);
+
+    constexpr int kClipboardOpenRetryCount = 6;
+    constexpr DWORD kClipboardOpenRetryDelayMs = 10;
+    bool clipboard_opened = false;
+    for (int attempt = 0; attempt < kClipboardOpenRetryCount; ++attempt) {
+        if (OpenClipboard(nullptr)) {
+            clipboard_opened = true;
+            break;
+        }
+        Sleep(kClipboardOpenRetryDelayMs);
+    }
+    if (!clipboard_opened) {
+        GlobalFree(handle);
+        DiagnosticsLog(L"WriteUnicodeClipboardText failed: OpenClipboard timed out.");
+        return false;
+    }
+
+    if (!EmptyClipboard()) {
+        CloseClipboard();
+        GlobalFree(handle);
+        DiagnosticsLog(L"WriteUnicodeClipboardText failed: EmptyClipboard returned false.");
+        return false;
+    }
+    if (SetClipboardData(CF_UNICODETEXT, handle) == nullptr) {
+        CloseClipboard();
+        GlobalFree(handle);
+        DiagnosticsLog(L"WriteUnicodeClipboardText failed: SetClipboardData returned null.");
+        return false;
+    }
     CloseClipboard();
+    DiagnosticsLog(L"WriteUnicodeClipboardText succeeded.");
     return true;
+}
+
+struct ClipboardSnapshot {
+    std::wstring text;
+};
+
+void CaptureClipboardSnapshot(ClipboardSnapshot& snapshot) {
+    DiagnosticsLog(L"Capturing clipboard snapshot.");
+    snapshot.text = ReadUnicodeClipboardText();
+    DiagnosticsLog(L"Clipboard snapshot captured. text_length=" + std::to_wstring(snapshot.text.size()));
+}
+
+void RestoreClipboardSnapshot(const ClipboardSnapshot& snapshot) {
+    DiagnosticsLog(L"Restoring clipboard snapshot.");
+    if (!snapshot.text.empty()) {
+        WriteUnicodeClipboardText(snapshot.text);
+        DiagnosticsLog(L"Clipboard restored from stored text.");
+        return;
+    }
+    DiagnosticsLog(L"Clipboard restore skipped because snapshot text is empty.");
+}
+
+bool IsDigitsOnly(const std::wstring& value) {
+    if (value.empty()) {
+        return false;
+    }
+    for (wchar_t ch : value) {
+        if (ch < L'0' || ch > L'9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::wstring DecodeProcessOutput(const std::string& bytes) {
+    if (bytes.empty()) {
+        return L"";
+    }
+
+    const int utf8_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+    if (utf8_length > 0) {
+        std::wstring result(static_cast<size_t>(utf8_length), L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), result.data(), utf8_length);
+        return result;
+    }
+
+    const int ansi_length = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+    if (ansi_length <= 0) {
+        return L"";
+    }
+
+    std::wstring result(static_cast<size_t>(ansi_length), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), result.data(), ansi_length);
+    return result;
+}
+
+std::wstring CaptureKeyNameFromVk(UINT vk_code) {
+    if (vk_code >= 'A' && vk_code <= 'Z') {
+        return std::wstring(1, static_cast<wchar_t>(towlower(static_cast<wchar_t>(vk_code))));
+    }
+    if (vk_code >= '0' && vk_code <= '9') {
+        return std::wstring(1, static_cast<wchar_t>(vk_code));
+    }
+    if (vk_code >= VK_F1 && vk_code <= VK_F24) {
+        return L"f" + std::to_wstring(vk_code - VK_F1 + 1);
+    }
+    switch (vk_code) {
+    case VK_TAB: return L"tab";
+    case VK_SPACE: return L"space";
+    case VK_RETURN: return L"enter";
+    case VK_ESCAPE: return L"escape";
+    case VK_BACK: return L"backspace";
+    case VK_INSERT: return L"insert";
+    case VK_DELETE: return L"delete";
+    case VK_HOME: return L"home";
+    case VK_END: return L"end";
+    case VK_PRIOR: return L"pageup";
+    case VK_NEXT: return L"pagedown";
+    case VK_UP: return L"up";
+    case VK_DOWN: return L"down";
+    case VK_LEFT: return L"left";
+    case VK_RIGHT: return L"right";
+    default: return L"";
+    }
+}
+
+std::wstring BuildCapturedHotkeyString(UINT modifiers, UINT vk_code) {
+    const std::wstring key_name = CaptureKeyNameFromVk(vk_code);
+    if (key_name.empty()) {
+        return L"";
+    }
+
+    std::wstring hotkey;
+    if ((modifiers & MOD_CONTROL) != 0) {
+        hotkey += L"Ctrl+";
+    }
+    if ((modifiers & MOD_SHIFT) != 0) {
+        hotkey += L"Shift+";
+    }
+    if ((modifiers & MOD_ALT) != 0) {
+        hotkey += L"Alt+";
+    }
+    if ((modifiers & MOD_WIN) != 0) {
+        hotkey += L"Win+";
+    }
+
+    if (!key_name.empty()) {
+        std::wstring label = key_name;
+        label[0] = static_cast<wchar_t>(towupper(label[0]));
+        hotkey += label;
+    }
+    return hotkey;
 }
 
 RECT BuildDialogWindowRectForClient(int client_width, int client_height, DWORD style, DWORD ex_style) {
@@ -1035,6 +1574,36 @@ void PaintDialogSectionFrame(
 }
 
 bool ShowPromptDialogWindow(HWND parent, HINSTANCE instance, const PromptDialogConfig& config, PromptDialogResult& result);
+bool ShowVariableCaptureDialogWindow(HWND parent, HINSTANCE instance, const VariableCaptureDialogConfig& config, VariableCaptureDialogResult& result);
+
+LRESULT CALLBACK TextEntryEditSubclassProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR ref_data) {
+    const HWND dialog = reinterpret_cast<HWND>(ref_data);
+    switch (message) {
+    case WM_GETDLGCODE:
+        if (wparam == VK_RETURN) {
+            return static_cast<LRESULT>(DLGC_WANTALLKEYS);
+        }
+        break;
+    case WM_KEYDOWN:
+        if (wparam == VK_RETURN) {
+            if ((GetKeyState(VK_SHIFT) & 0x8000) == 0) {
+                PostMessageW(dialog, WM_COMMAND, MAKEWPARAM(kTextEntryOkId, BN_CLICKED), 0);
+                return 0;
+            }
+        }
+        break;
+    case WM_CHAR:
+        if (wparam == VK_RETURN || wparam == L'\r' || wparam == L'\n') {
+            if ((GetKeyState(VK_SHIFT) & 0x8000) == 0) {
+                return 0;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+}
 
 std::wstring TrimWhitespaceCopy(std::wstring value) {
     size_t start = 0;
@@ -1068,19 +1637,48 @@ LRESULT CALLBACK TextEntryDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPA
     case WM_CREATE: {
         InitDialogVisuals(state->font, state->title_font, state->background_brush, state->input_brush, state->surface_brush, state->config->dark_theme);
         const int margin = 18;
-        const int width = kTextEntryDialogWidth;
+        const int width = state->config->width > 0 ? state->config->width : kTextEntryDialogWidth;
+        const int height = state->config->height > 0 ? state->config->height : kTextEntryDialogHeight;
         const int button_width = 112;
         const int button_height = 34;
         const int button_gap = 12;
-        const int buttons_y = kTextEntryDialogHeight - margin - button_height;
+        const int buttons_y = height - margin - button_height;
         const int edit_width = width - margin * 2;
+        const bool multiline = state->config->multiline;
+
+        int prompt_x = margin;
+        int prompt_y = 20;
+        int prompt_width = edit_width;
+        int prompt_height = multiline ? 42 : 30;
+        int edit_y = multiline ? 92 : 68;
+        int edit_height = multiline ? 136 : 36;
+
+        HWND icon_control = nullptr;
+        HICON dialog_icon = nullptr;
+        if (multiline && state->config->show_app_icon) {
+            dialog_icon = reinterpret_cast<HICON>(LoadImageW(state->instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 28, 28, LR_DEFAULTCOLOR | LR_SHARED));
+            icon_control = CreateWindowExW(
+                0, L"STATIC", nullptr,
+                WS_CHILD | WS_VISIBLE | SS_ICON,
+                margin, 18, 32, 32, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEntryIconId)), state->instance, nullptr
+            );
+            if (icon_control != nullptr && dialog_icon != nullptr) {
+                SendMessageW(icon_control, STM_SETICON, reinterpret_cast<WPARAM>(dialog_icon), 0);
+            }
+            prompt_x += 40;
+            prompt_width -= 40;
+        }
 
         HWND prompt_label = CreateWindowExW(0, L"STATIC", state->config->prompt.c_str(),
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            margin, 20, edit_width, 30, hwnd, nullptr, state->instance, nullptr);
+            prompt_x, prompt_y, prompt_width, prompt_height, hwnd, nullptr, state->instance, nullptr);
+        DWORD edit_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL;
+        if (multiline) {
+            edit_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN;
+        }
         state->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", state->config->initial_value.c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-            margin, 68, edit_width, 36, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEntryEditId)), state->instance, nullptr);
+            edit_style,
+            margin, edit_y, edit_width, edit_height, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEntryEditId)), state->instance, nullptr);
         HWND ok_button = CreateWindowExW(0, L"BUTTON", state->config->ok_button_label.c_str(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
             width - margin - (button_width * 2) - button_gap, buttons_y, button_width, button_height, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEntryOkId)), state->instance, nullptr);
@@ -1089,12 +1687,18 @@ LRESULT CALLBACK TextEntryDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPA
             width - margin - button_width, buttons_y, button_width, button_height, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEntryCancelId)), state->instance, nullptr);
 
         SendMessageW(prompt_label, WM_SETFONT, reinterpret_cast<WPARAM>(state->title_font), TRUE);
+        if (icon_control != nullptr) {
+            SendMessageW(icon_control, WM_SETFONT, reinterpret_cast<WPARAM>(state->title_font), TRUE);
+        }
         SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
         SendMessageW(ok_button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
         SendMessageW(cancel_button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
         SetWindowTheme(hwnd, state->config->dark_theme ? L"DarkMode_Explorer" : L"", nullptr);
         ApplyDialogControlTheme(state->edit, state->config->dark_theme);
         SendMessageW(state->edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(8, 8));
+        if (multiline) {
+            SetWindowSubclass(state->edit, TextEntryEditSubclassProc, 1, reinterpret_cast<DWORD_PTR>(hwnd));
+        }
         if (state->config->dark_theme) {
             const BOOL use_dark = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark, sizeof(use_dark));
@@ -1115,9 +1719,11 @@ LRESULT CALLBACK TextEntryDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPA
         }
         if ((control_id == kTextEntryOkId && notify == BN_CLICKED) ||
             (control_id == kTextEntryEditId && notify == EN_MAXTEXT)) {
-            wchar_t buffer[512] = {};
-            GetWindowTextW(state->edit, buffer, static_cast<int>(std::size(buffer)));
-            state->result->text = TrimWhitespaceCopy(buffer);
+            const int text_length = GetWindowTextLengthW(state->edit);
+            std::wstring text(static_cast<size_t>(std::max(0, text_length)) + 1, L'\0');
+            GetWindowTextW(state->edit, text.data(), text_length + 1);
+            text.resize(static_cast<size_t>(std::max(0, text_length)));
+            state->result->text = state->config->trim_result ? TrimWhitespaceCopy(text) : text;
             state->result->accepted = true;
             DestroyWindow(hwnd);
             return 0;
@@ -1127,8 +1733,10 @@ LRESULT CALLBACK TextEntryDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPA
 
     case WM_KEYDOWN:
         if (wparam == VK_RETURN) {
-            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kTextEntryOkId, BN_CLICKED), 0);
-            return 0;
+            if (!state->config->multiline || GetFocus() != state->edit || (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
+                PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kTextEntryOkId, BN_CLICKED), 0);
+                return 0;
+            }
         }
         if (wparam == VK_ESCAPE) {
             DestroyWindow(hwnd);
@@ -1169,6 +1777,182 @@ LRESULT CALLBACK TextEntryDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPA
             break;
         }
         const bool primary = draw->CtlID == kTextEntryOkId;
+        DrawThemedDialogButton(BuildDialogTheme(state->config->dark_theme), state->font, draw, primary, false);
+        return TRUE;
+    }
+
+    case WM_DESTROY:
+        if (state->edit != nullptr) {
+            RemoveWindowSubclass(state->edit, TextEntryEditSubclassProc, 1);
+        }
+        ReleaseDialogVisuals(state->font, state->title_font, state->background_brush, state->input_brush, state->surface_brush);
+        state->finished = true;
+        return 0;
+
+    default:
+        break;
+    }
+
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+LRESULT CALLBACK VariableCaptureDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* state = reinterpret_cast<VariableCaptureDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    if (message == WM_NCCREATE) {
+        auto* create_struct = reinterpret_cast<CREATESTRUCTW*>(lparam);
+        state = static_cast<VariableCaptureDialogState*>(create_struct->lpCreateParams);
+        state->hwnd = hwnd;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+    }
+
+    if (state == nullptr) {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+
+    switch (message) {
+    case WM_CREATE: {
+        InitDialogVisuals(state->font, state->title_font, state->background_brush, state->input_brush, state->surface_brush, state->config->dark_theme);
+        const int margin = 18;
+        const int width = kVariableCaptureDialogWidth;
+        const int button_width = 112;
+        const int button_height = 34;
+        const int button_gap = 12;
+        const int buttons_y = kVariableCaptureDialogHeight - margin - button_height;
+        const int edit_width = width - margin * 2;
+
+        HWND prompt_label = CreateWindowExW(
+            0, L"STATIC", state->config->prompt.c_str(),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            margin, 20, edit_width, 56, hwnd, nullptr, state->instance, nullptr
+        );
+        state->edit = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            margin, 96, edit_width, 36, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVariableCaptureEditId)), state->instance, nullptr
+        );
+        HWND ok_button = CreateWindowExW(
+            0, L"BUTTON", L"Insert",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+            width - margin - (button_width * 2) - button_gap, buttons_y, button_width, button_height, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVariableCaptureOkId)), state->instance, nullptr
+        );
+        HWND cancel_button = CreateWindowExW(
+            0, L"BUTTON", L"Cancel",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+            width - margin - button_width, buttons_y, button_width, button_height, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVariableCaptureCancelId)), state->instance, nullptr
+        );
+
+        SendMessageW(prompt_label, WM_SETFONT, reinterpret_cast<WPARAM>(state->title_font), TRUE);
+        SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
+        SendMessageW(ok_button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
+        SendMessageW(cancel_button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
+        SetWindowTheme(hwnd, state->config->dark_theme ? L"DarkMode_Explorer" : L"", nullptr);
+        ApplyDialogControlTheme(state->edit, state->config->dark_theme);
+        SendMessageW(state->edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(8, 8));
+        if (state->config->dark_theme) {
+            const BOOL use_dark = TRUE;
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark, sizeof(use_dark));
+        }
+        InvalidateRect(hwnd, nullptr, TRUE);
+
+        SetFocus(hwnd);
+        return 0;
+    }
+
+    case WM_COMMAND: {
+        const int control_id = LOWORD(wparam);
+        const int notify = HIWORD(wparam);
+        if (control_id == kVariableCaptureCancelId && notify == BN_CLICKED) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (control_id == kVariableCaptureOkId && notify == BN_CLICKED) {
+            wchar_t buffer[512] = {};
+            GetWindowTextW(state->edit, buffer, static_cast<int>(std::size(buffer)));
+            state->result->text = TrimWhitespaceCopy(buffer);
+            state->result->accepted = !state->result->text.empty();
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: {
+        if (wparam == VK_ESCAPE) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (wparam == VK_RETURN && GetFocus() != state->edit) {
+            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kVariableCaptureOkId, BN_CLICKED), 0);
+            return 0;
+        }
+
+        if (GetFocus() == state->edit) {
+            break;
+        }
+
+        UINT modifiers = 0;
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+            modifiers |= MOD_CONTROL;
+        }
+        if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) {
+            modifiers |= MOD_SHIFT;
+        }
+        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+            modifiers |= MOD_ALT;
+        }
+        if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) {
+            modifiers |= MOD_WIN;
+        }
+
+        std::wstring captured;
+        if (state->config->shortcut_mode) {
+            captured = BuildCapturedHotkeyString(modifiers, static_cast<UINT>(wparam));
+        } else {
+            captured = CaptureKeyNameFromVk(static_cast<UINT>(wparam));
+        }
+        if (!captured.empty()) {
+            SetWindowTextW(state->edit, captured.c_str());
+            SendMessageW(state->edit, EM_SETSEL, 0, -1);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_ERASEBKGND: {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        RECT rect{};
+        GetClientRect(hwnd, &rect);
+        FillRect(dc, &rect, state->background_brush != nullptr ? state->background_brush : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        const DialogTheme theme = BuildDialogTheme(state->config->dark_theme);
+        if (message == WM_CTLCOLOREDIT) {
+            SetTextColor(dc, theme.text);
+            SetBkColor(dc, theme.input);
+            return reinterpret_cast<INT_PTR>(state->input_brush != nullptr ? state->input_brush : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+        }
+        SetTextColor(dc, theme.text);
+        SetBkColor(dc, theme.background);
+        SetBkMode(dc, TRANSPARENT);
+        return reinterpret_cast<INT_PTR>(state->background_brush != nullptr ? state->background_brush : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+    }
+
+    case WM_DRAWITEM: {
+        auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
+        if (draw == nullptr || draw->CtlType != ODT_BUTTON) {
+            break;
+        }
+        const bool primary = draw->CtlID == kVariableCaptureOkId;
         DrawThemedDialogButton(BuildDialogTheme(state->config->dark_theme), state->font, draw, primary, false);
         return TRUE;
     }
@@ -1363,6 +2147,10 @@ LRESULT CALLBACK ImportOptionsDialogProc(HWND hwnd, UINT message, WPARAM wparam,
                 dialog.nMaxFile = static_cast<DWORD>(std::size(file_path));
                 dialog.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
                 dialog.lpstrDefExt = L"json";
+                const std::wstring initial_directory = DirectoryFromPath(state->current_file_path);
+                if (!initial_directory.empty()) {
+                    dialog.lpstrInitialDir = initial_directory.c_str();
+                }
                 if (!GetOpenFileNameW(&dialog)) {
                     return 0;
                 }
@@ -2185,10 +2973,24 @@ bool ShowTextEntryDialogWindow(HWND parent, HINSTANCE instance, const TextEntryD
     RegisterClassW(&window_class);
 
     RECT parent_rect{};
-    GetWindowRect(parent, &parent_rect);
+    bool has_anchor_rect = false;
+    if (parent != nullptr && IsWindow(parent)) {
+        has_anchor_rect = GetWindowRect(parent, &parent_rect) != FALSE;
+    }
+    if (!has_anchor_rect) {
+        HWND foreground = GetForegroundWindow();
+        if (foreground != nullptr && IsWindow(foreground)) {
+            has_anchor_rect = GetWindowRect(foreground, &parent_rect) != FALSE;
+        }
+    }
+    if (!has_anchor_rect) {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &parent_rect, 0);
+    }
     const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     const DWORD ex_style = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
-    const RECT window_rect = BuildDialogWindowRectForClient(kTextEntryDialogWidth, kTextEntryDialogHeight, style, ex_style);
+    const int client_width = config.width > 0 ? config.width : kTextEntryDialogWidth;
+    const int client_height = config.height > 0 ? config.height : kTextEntryDialogHeight;
+    const RECT window_rect = BuildDialogWindowRectForClient(client_width, client_height, style, ex_style);
     const int width = window_rect.right - window_rect.left;
     const int height = window_rect.bottom - window_rect.top;
     const int x = parent_rect.left + std::max(0L, ((parent_rect.right - parent_rect.left) - width) / 2);
@@ -2198,6 +3000,13 @@ bool ShowTextEntryDialogWindow(HWND parent, HINSTANCE instance, const TextEntryD
     state.instance = instance;
     state.config = &config;
     state.result = &result;
+
+    bool disable_parent = false;
+    if (parent != nullptr && IsWindow(parent)) {
+        DWORD owner_process_id = 0;
+        GetWindowThreadProcessId(parent, &owner_process_id);
+        disable_parent = owner_process_id == GetCurrentProcessId();
+    }
 
     HWND dialog = CreateWindowExW(
         ex_style,
@@ -2217,8 +3026,13 @@ bool ShowTextEntryDialogWindow(HWND parent, HINSTANCE instance, const TextEntryD
         return false;
     }
 
-    EnableWindow(parent, FALSE);
+    if (disable_parent) {
+        EnableWindow(parent, FALSE);
+    }
     ShowWindow(dialog, SW_SHOW);
+    SetWindowPos(dialog, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    SetForegroundWindow(dialog);
+    SetActiveWindow(dialog);
     UpdateWindow(dialog);
 
     MSG message{};
@@ -2229,9 +3043,13 @@ bool ShowTextEntryDialogWindow(HWND parent, HINSTANCE instance, const TextEntryD
         }
     }
 
-    EnableWindow(parent, TRUE);
-    SetActiveWindow(parent);
-    SetForegroundWindow(parent);
+    if (disable_parent) {
+        EnableWindow(parent, TRUE);
+    }
+    if (parent != nullptr && IsWindow(parent)) {
+        SetActiveWindow(parent);
+        SetForegroundWindow(parent);
+    }
     return result.accepted;
 }
 
@@ -2355,6 +3173,66 @@ bool ShowExportOptionsDialogWindow(HWND parent, HINSTANCE instance, const Export
     return result.accepted;
 }
 
+bool ShowVariableCaptureDialogWindow(HWND parent, HINSTANCE instance, const VariableCaptureDialogConfig& config, VariableCaptureDialogResult& result) {
+    WNDCLASSW window_class{};
+    window_class.lpfnWndProc = VariableCaptureDialogProc;
+    window_class.hInstance = instance;
+    window_class.lpszClassName = L"BlinkTextVariableCaptureDialog";
+    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    RegisterClassW(&window_class);
+
+    RECT parent_rect{};
+    GetWindowRect(parent, &parent_rect);
+    const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    const DWORD ex_style = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
+    const RECT window_rect = BuildDialogWindowRectForClient(kVariableCaptureDialogWidth, kVariableCaptureDialogHeight, style, ex_style);
+    const int width = window_rect.right - window_rect.left;
+    const int height = window_rect.bottom - window_rect.top;
+    const int x = parent_rect.left + std::max(0L, ((parent_rect.right - parent_rect.left) - width) / 2);
+    const int y = parent_rect.top + std::max(0L, ((parent_rect.bottom - parent_rect.top) - height) / 2);
+
+    VariableCaptureDialogState state{};
+    state.instance = instance;
+    state.config = &config;
+    state.result = &result;
+
+    HWND dialog = CreateWindowExW(
+        ex_style,
+        window_class.lpszClassName,
+        config.title.c_str(),
+        style,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        nullptr,
+        instance,
+        &state
+    );
+    if (dialog == nullptr) {
+        return false;
+    }
+
+    EnableWindow(parent, FALSE);
+    ShowWindow(dialog, SW_SHOW);
+    UpdateWindow(dialog);
+
+    MSG message{};
+    while (!state.finished && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(dialog, &message)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
+    EnableWindow(parent, TRUE);
+    SetActiveWindow(parent);
+    SetForegroundWindow(parent);
+    return result.accepted;
+}
+
 
 bool AppWindow::Create(HINSTANCE instance) {
     instance_ = instance;
@@ -2425,29 +3303,197 @@ void AppWindow::ShowInfoDialog() const {
     PromptDialogConfig dialog_config;
     dialog_config.title = L"About BlinkText";
     dialog_config.message =
-        L"BlinkText v1.0\r\n"
-        L"Fast, local text expansion tool designed for instant, reliable typing with zero delay.\r\n\r\n"
-        L"Key Features\r\n"
-        L"\u2022 Instant expansion without pastes conflicts\r\n"
-        L"\u2022 No trigger duplication during rapid input (e.g., Ctrl+V after trigger)\r\n"
-        L"\u2022 Fully offline - no data collection\r\n"
-        L"\u2022 Lightweight and optimized for speed\r\n"
-        L"\u2022 Supports importing exported triggers from compatible tools\r\n\r\n"
-        L"Compatibility\r\n"
-        L"\u2022 Supports importing exported triggers from Beeftext for seamless migration\r\n\r\n"
-        L"Privacy\r\n"
-        L"\u2022 No user data is collected, stored, or transmitted\r\n\r\n"
+        L"BlinkText\r\n"
+        L"Fast, local text expansion focused on reliable typing, clean workflow, and fully offline use.\r\n\r\n"
+        L"What you can do\r\n"
+        L"\u2022 Expand snippets instantly with minimal delay\r\n"
+        L"\u2022 Use variables, clipboard actions, cursor markers, and input prompts\r\n"
+        L"\u2022 Import compatible exports from Beeftext and similar tools\r\n"
+        L"\u2022 Keep all data local on your device\r\n\r\n"
         L"Developer\r\n"
-        L"\u2022 Developed by: Eslam Mustafa\r\n"
-        L"\u2022 Contact: Eslam.Youssef@protonmail.com / Eslam.G.Youssef@gmail.com\r\n"
-        L"\u2022 GitHub: https://github.com/LeaDer-E";
-    dialog_config.primary_label = L"OK";
+        L"\u2022 Eslam Mustafa\r\n"
+        L"\u2022 Eslam.Youssef@protonmail.com\r\n"
+        L"\u2022 Eslam.G.Youssef@gmail.com\r\n\r\n"
+        L"Open the BlinkText Wiki for setup guides, variables help, import/export details, and troubleshooting.";
+    dialog_config.primary_label = L"Open Wiki";
     dialog_config.dark_theme = IsDarkTheme();
+    dialog_config.cancel_label = L"Close";
     dialog_config.width = 760;
-    dialog_config.height = 520;
+    dialog_config.height = 430;
 
     PromptDialogResult result;
-    ShowPromptDialogWindow(hwnd_, instance_, dialog_config, result);
+    if (ShowPromptDialogWindow(hwnd_, instance_, dialog_config, result) && result.choice == PromptDialogChoice::Primary) {
+        ShellExecuteW(hwnd_, L"open", kBlinkTextWikiUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
+bool AppWindow::ShowVariableLabelDialog(const std::wstring& title, const std::wstring& prompt, std::wstring& value) const {
+    value.clear();
+
+    TextEntryDialogConfig dialog_config;
+    dialog_config.title = title;
+    dialog_config.prompt = prompt;
+    dialog_config.ok_button_label = L"Insert";
+    dialog_config.dark_theme = IsDarkTheme();
+
+    TextEntryDialogResult result;
+    if (!ShowTextEntryDialogWindow(hwnd_, instance_, dialog_config, result) || !result.accepted) {
+        return false;
+    }
+
+    value = TrimWhitespaceCopy(result.text);
+    return !value.empty();
+}
+
+bool AppWindow::IsReservedAppShortcut(UINT modifiers, UINT vk_code) const {
+    if (vk_code == 0) {
+        return false;
+    }
+
+    if (modifiers == registered_hotkey_modifiers_ && vk_code == registered_hotkey_vk_) {
+        return true;
+    }
+
+    struct ReservedShortcut {
+        UINT modifiers;
+        UINT vk_code;
+    };
+
+    constexpr ReservedShortcut reserved_shortcuts[] = {
+        {MOD_CONTROL, 'S'},
+        {MOD_CONTROL, 'N'},
+        {MOD_CONTROL, 'E'},
+        {MOD_CONTROL, 'F'},
+        {MOD_CONTROL, 'A'},
+        {MOD_CONTROL, 'R'},
+        {0, VK_F2},
+    };
+
+    for (const ReservedShortcut& shortcut : reserved_shortcuts) {
+        if (shortcut.modifiers == modifiers && shortcut.vk_code == vk_code) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AppWindow::ShowVariableKeyDialog(bool shortcut_mode, std::wstring& captured_text) const {
+    captured_text.clear();
+
+    VariableCaptureDialogConfig dialog_config;
+    dialog_config.title = shortcut_mode ? L"Insert Shortcut Variable" : L"Insert Key Variable";
+    dialog_config.prompt = shortcut_mode
+        ? L"Press the shortcut to insert, or type it manually.\r\nExamples: Ctrl+S, Ctrl+Shift+S, Alt+F4, Win+R"
+        : L"Press the key to insert, or type it manually.\r\nExamples: Tab, Enter, Escape, Backspace";
+    dialog_config.dark_theme = IsDarkTheme();
+    dialog_config.shortcut_mode = shortcut_mode;
+
+    while (true) {
+        VariableCaptureDialogResult result;
+        if (!ShowVariableCaptureDialogWindow(hwnd_, instance_, dialog_config, result) || !result.accepted) {
+            return false;
+        }
+
+        const std::wstring entered_text = TrimWhitespaceCopy(result.text);
+        if (entered_text.empty()) {
+            return false;
+        }
+
+        if (!shortcut_mode) {
+            captured_text = entered_text;
+            return true;
+        }
+
+        UINT modifiers = 0;
+        UINT vk_code = 0;
+        if (!ParseHotkeyString(entered_text, modifiers, vk_code)) {
+            PromptDialogConfig prompt_config;
+            prompt_config.title = L"Invalid Shortcut";
+            prompt_config.message = L"BlinkText could not understand that shortcut.\r\n\r\nUse formats like Ctrl+S, Ctrl+Shift+S, Alt+F4, or Win+R.";
+            prompt_config.primary_label = L"Try Again";
+            prompt_config.cancel_label = L"Cancel";
+            prompt_config.dark_theme = IsDarkTheme();
+
+            PromptDialogResult prompt_result;
+            if (!ShowPromptDialogWindow(hwnd_, instance_, prompt_config, prompt_result) || prompt_result.choice != PromptDialogChoice::Primary) {
+                return false;
+            }
+            continue;
+        }
+
+        if (IsReservedAppShortcut(modifiers, vk_code)) {
+            PromptDialogConfig prompt_config;
+            prompt_config.title = L"Shortcut Already Used";
+            prompt_config.message = L"That shortcut is already used by BlinkText.\r\nChoose a different shortcut variable.";
+            prompt_config.primary_label = L"Try Again";
+            prompt_config.cancel_label = L"Cancel";
+            prompt_config.dark_theme = IsDarkTheme();
+
+            PromptDialogResult prompt_result;
+            if (!ShowPromptDialogWindow(hwnd_, instance_, prompt_config, prompt_result) || prompt_result.choice != PromptDialogChoice::Primary) {
+                return false;
+            }
+            continue;
+        }
+
+        captured_text = BuildCapturedHotkeyString(modifiers, vk_code);
+        return !captured_text.empty();
+    }
+}
+
+bool AppWindow::BrowseForPowerShellScript(std::wstring& selected_path) const {
+    selected_path.clear();
+
+    wchar_t file_path[32768] = {};
+    constexpr wchar_t filter[] = L"PowerShell Scripts (*.ps1)\0*.ps1\0\0";
+
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = hwnd_;
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = file_path;
+    dialog.nMaxFile = static_cast<DWORD>(std::size(file_path));
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
+    dialog.lpstrDefExt = L"ps1";
+
+    std::wstring initial_directory = GetDocumentsDirectory();
+    if (!initial_directory.empty()) {
+        dialog.lpstrInitialDir = initial_directory.c_str();
+    }
+
+    if (!GetOpenFileNameW(&dialog)) {
+        return false;
+    }
+
+    selected_path = file_path;
+    return !selected_path.empty();
+}
+
+void AppWindow::ShowVariablesAboutDialog() const {
+    PromptDialogConfig dialog_config;
+    dialog_config.title = L"Variables Help";
+    dialog_config.message =
+        L"Variables let you mix dynamic values and actions directly inside snippet content.\r\n\r\n"
+        L"Common examples\r\n"
+        L"\u2022 #{clipboard}\r\n"
+        L"\u2022 #{dateTime:yyyy-MM-dd HH:mm:ss}\r\n"
+        L"\u2022 #{input:Name}\r\n"
+        L"\u2022 #{cursor}\r\n"
+        L"\u2022 #{key:Tab}\r\n"
+        L"\u2022 #{shortcut:Ctrl+Shift+S}\r\n"
+        L"\u2022 #{combo:trigger}\r\n"
+        L"\u2022 #{envVar:USERNAME}\r\n\r\n"
+        L"Open the Variables Wiki for the full list, syntax rules, and practical examples.";
+    dialog_config.primary_label = L"Open Variables Wiki";
+    dialog_config.cancel_label = L"Close";
+    dialog_config.dark_theme = IsDarkTheme();
+    dialog_config.width = 720;
+    dialog_config.height = 360;
+
+    PromptDialogResult result;
+    if (ShowPromptDialogWindow(hwnd_, instance_, dialog_config, result) && result.choice == PromptDialogChoice::Primary) {
+        ShellExecuteW(hwnd_, L"open", kVariablesWikiUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    }
 }
 
 bool AppWindow::IsDarkTheme() const {
@@ -4610,7 +5656,13 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     }
 
     case WM_CLOSE:
+        if (!quit_requested_from_tray_) {
+            MinimizeToTray();
+            SetStatusText(L"BlinkText is still running in the tray. Use Quit from the tray menu to close it.");
+            return 0;
+        }
         if (!ConfirmDiscardEditorChanges(L"closing the app")) {
+            quit_requested_from_tray_ = false;
             return 0;
         }
         SaveData();
@@ -4814,6 +5866,7 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
                 ToggleEngine();
                 return 0;
             case kTrayMenuExit:
+                quit_requested_from_tray_ = true;
                 PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 return 0;
             case kSnippetMenuEdit:
@@ -4990,6 +6043,123 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             case kEditMenuInsertPdi:
                 if (active_context_edit_control_ != nullptr) {
                     InsertTextIntoEditControl(active_context_edit_control_, L"\u2069");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableClipboard:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{clipboard}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariablePreviousClipboard:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{previousClipboard}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableDate:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{date}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableTime:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{time}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableDateAndTime:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{dateTime}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableCustomDateTime:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{dateTime:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableKey:
+                if (active_context_edit_control_ == content_edit_) {
+                    std::wstring captured_text;
+                    if (ShowVariableKeyDialog(false, captured_text) && !captured_text.empty()) {
+                        InsertTextIntoEditControl(active_context_edit_control_, L"#{key:" + captured_text + L"}");
+                    }
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableShortcut:
+                if (active_context_edit_control_ == content_edit_) {
+                    std::wstring captured_text;
+                    if (ShowVariableKeyDialog(true, captured_text) && !captured_text.empty()) {
+                        InsertTextIntoEditControl(active_context_edit_control_, L"#{shortcut:" + captured_text + L"}");
+                    }
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableDelay:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{delay:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableCursor:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{cursor}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableComboPlain:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{combo:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableComboTrim:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{trim:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableComboUpper:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{upper:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableComboLower:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{lower:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableEnvVar:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{envVar:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariablePowerShell:
+                if (active_context_edit_control_ == content_edit_) {
+                    std::wstring selected_path;
+                    if (BrowseForPowerShellScript(selected_path) && !selected_path.empty()) {
+                        InsertTextIntoEditControl(active_context_edit_control_, L"#{powershell:" + selected_path + L"}");
+                    }
+                    return 0;
+                }
+                break;
+            case kEditMenuVariableInput:
+                if (active_context_edit_control_ == content_edit_) {
+                    InsertTextIntoEditControl(active_context_edit_control_, L"#{input:}");
+                    return 0;
+                }
+                break;
+            case kEditMenuVariablesAbout:
+                if (active_context_edit_control_ == content_edit_) {
+                    ShowVariablesAboutDialog();
                     return 0;
                 }
                 break;
@@ -5375,6 +6545,7 @@ bool AppWindow::ParseNativeData(const simplejson::Value& root, ParsedImportData&
         data.settings.right_panel_width = JsonIntValue(FindField(settings, L"right_panel_width"), data.settings.right_panel_width);
         data.settings.groups_panel_height = JsonIntValue(FindField(settings, L"groups_panel_height"), data.settings.groups_panel_height);
         data.settings.last_group_filter = TrimWhitespaceCopy(JsonStringValue(FindField(settings, L"last_group_filter")));
+        data.settings.last_io_directory = TrimWhitespaceCopy(JsonStringValue(FindField(settings, L"last_io_directory")));
         data.settings.snippet_sort_column = JsonIntValue(FindField(settings, L"snippet_sort_column"), data.settings.snippet_sort_column);
         data.settings.snippet_sort_ascending = JsonBoolValue(FindField(settings, L"snippet_sort_ascending"), data.settings.snippet_sort_ascending);
 
@@ -5572,6 +6743,7 @@ bool AppWindow::SaveDataToFile(const std::wstring& path) const {
     settings.object_value.emplace_back(L"right_panel_width", simplejson::Value::Number(settings_.right_panel_width));
     settings.object_value.emplace_back(L"groups_panel_height", simplejson::Value::Number(settings_.groups_panel_height));
     settings.object_value.emplace_back(L"last_group_filter", simplejson::Value::String(settings_.last_group_filter));
+    settings.object_value.emplace_back(L"last_io_directory", simplejson::Value::String(settings_.last_io_directory));
     settings.object_value.emplace_back(L"snippet_sort_column", simplejson::Value::Number(settings_.snippet_sort_column));
     settings.object_value.emplace_back(L"snippet_sort_ascending", simplejson::Value::Bool(settings_.snippet_sort_ascending));
     root.object_value.emplace_back(L"settings", std::move(settings));
@@ -5833,9 +7005,9 @@ void AppWindow::MergeImportedData(const ParsedImportData& data, const ImportOpti
 
 void AppWindow::ImportDataFromDialog() {
     wchar_t file_path[32768] = {};
-    if (!data_file_path_.empty()) {
-        wcsncpy_s(file_path, data_file_path_.c_str(), _TRUNCATE);
-    }
+    const std::wstring preferred_directory = !settings_.last_io_directory.empty()
+        ? settings_.last_io_directory
+        : GetDocumentsDirectory();
 
     wchar_t filter[] = L"JSON Files (*.json)\0*.json\0All Files (*.*)\0*.*\0\0";
     OPENFILENAMEW dialog{};
@@ -5846,12 +7018,17 @@ void AppWindow::ImportDataFromDialog() {
     dialog.nMaxFile = static_cast<DWORD>(std::size(file_path));
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
     dialog.lpstrDefExt = L"json";
+    dialog.lpstrInitialDir = preferred_directory.empty() ? nullptr : preferred_directory.c_str();
 
     if (!GetOpenFileNameW(&dialog)) {
         return;
     }
 
     std::wstring selected_file_path = file_path;
+    const std::wstring selected_directory = DirectoryFromPath(selected_file_path);
+    if (!selected_directory.empty()) {
+        settings_.last_io_directory = selected_directory;
+    }
     ParsedImportData imported_data;
     std::wstring error;
     if (!ParseImportFile(selected_file_path, imported_data, error)) {
@@ -5919,13 +7096,6 @@ void AppWindow::ExportDataToDialog() {
     }
 
     const std::wstring current_group = options.current_group_only ? CurrentGroupFilter() : L"";
-    auto directory_from_path = [](const std::wstring& path) {
-        const size_t slash = path.find_last_of(L"\\/");
-        if (slash == std::wstring::npos) {
-            return std::wstring();
-        }
-        return path.substr(0, slash);
-    };
     auto make_export_timestamp = []() {
         SYSTEMTIME local_time{};
         GetLocalTime(&local_time);
@@ -5948,11 +7118,13 @@ void AppWindow::ExportDataToDialog() {
         : (L"BlinkText-" + timestamp + L".json");
 
     std::wstring suggested_path;
-    const std::wstring documents_directory = GetDocumentsDirectory();
-    if (!documents_directory.empty()) {
-        suggested_path = JoinPath(documents_directory, suggested_name);
+    const std::wstring preferred_directory = !settings_.last_io_directory.empty()
+        ? settings_.last_io_directory
+        : GetDocumentsDirectory();
+    if (!preferred_directory.empty()) {
+        suggested_path = JoinPath(preferred_directory, suggested_name);
     } else if (!data_file_path_.empty()) {
-        const std::wstring directory = directory_from_path(data_file_path_);
+        const std::wstring directory = DirectoryFromPath(data_file_path_);
         suggested_path = directory.empty() ? suggested_name : JoinPath(directory, suggested_name);
     } else {
         suggested_path = suggested_name;
@@ -5968,7 +7140,7 @@ void AppWindow::ExportDataToDialog() {
     dialog.hwndOwner = hwnd_;
     dialog.lpstrFilter = options.beeftext_format ? beeftext_filter : native_filter;
     dialog.lpstrFile = file_path;
-    dialog.lpstrInitialDir = documents_directory.empty() ? nullptr : documents_directory.c_str();
+    dialog.lpstrInitialDir = preferred_directory.empty() ? nullptr : preferred_directory.c_str();
     dialog.nMaxFile = static_cast<DWORD>(std::size(file_path));
     dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     dialog.lpstrDefExt = L"json";
@@ -5979,6 +7151,11 @@ void AppWindow::ExportDataToDialog() {
     }
 
     if (ExportDataToFile(file_path, options)) {
+        const std::wstring selected_directory = DirectoryFromPath(file_path);
+        if (!selected_directory.empty()) {
+            settings_.last_io_directory = selected_directory;
+            SaveData();
+        }
         std::wstring status = L"Exported ";
         status += options.beeftext_format ? L"Beeftext combos" : L"native BlinkText JSON";
         if (options.current_group_only && !current_group.empty()) {
@@ -8182,28 +9359,32 @@ void AppWindow::WriteWindowText(HWND control, const std::wstring& value) const {
 void AppWindow::ExpandSnippetExternally(const Snippet& snippet, int delete_count) {
     bool expected = false;
     if (!expansion_in_progress_.compare_exchange_strong(expected, true)) {
+        DiagnosticsLog(L"ExpandSnippetExternally skipped because another expansion is already in progress.");
         return;
     }
 
-    const std::wstring content = snippet.content;
     const std::wstring trigger = snippet.trigger;
+    HWND target_window = GetForegroundWindow();
+    if (target_window != nullptr) {
+        HWND root = GetAncestor(target_window, GA_ROOT);
+        if (root != nullptr) {
+            target_window = root;
+        }
+    }
+    const std::wstring target_process_name = GetProcessBaseNameForWindow(target_window);
     const int actual_delete_count = delete_count >= 0 ? delete_count : static_cast<int>(snippet.trigger.size());
     const DWORD settle_delay = static_cast<DWORD>(std::max(0, settings_.instant_settle_ms));
     const DWORD backspace_delay = static_cast<DWORD>(std::max(0, settings_.backspace_delay_ms));
     const DWORD restore_delay = static_cast<DWORD>(std::max(0, settings_.restore_clipboard_delay_ms));
+    DiagnosticsLog(
+        L"ExpandSnippetExternally starting. trigger='" + trigger +
+        L"', delete_count=" + std::to_wstring(actual_delete_count) +
+        L", target_window=" + FormatPointerValue(target_window) +
+        L", process='" + target_process_name + L"'");
 
-    std::thread([this, content, trigger, actual_delete_count, settle_delay, backspace_delay, restore_delay]() {
-        auto send_key = [](WORD vk) {
-            INPUT inputs[2] = {};
-            inputs[0].type = INPUT_KEYBOARD;
-            inputs[0].ki.wVk = vk;
-            inputs[1].type = INPUT_KEYBOARD;
-            inputs[1].ki.wVk = vk;
-            inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-            SendInput(2, inputs, sizeof(INPUT));
-        };
-
-        auto send_ctrl_v = []() {
+    std::thread([this, snippet, trigger, target_window, target_process_name, actual_delete_count, settle_delay, backspace_delay, restore_delay]() mutable {
+        try {
+            auto send_ctrl_v = []() {
             INPUT inputs[4] = {};
             inputs[0].type = INPUT_KEYBOARD;
             inputs[0].ki.wVk = VK_CONTROL;
@@ -8218,72 +9399,267 @@ void AppWindow::ExpandSnippetExternally(const Snippet& snippet, int delete_count
             SendInput(4, inputs, sizeof(INPUT));
         };
 
-        auto read_clipboard_text = []() -> std::wstring {
-            std::wstring text;
-            if (!OpenClipboard(nullptr)) {
-                return text;
+        auto release_modifier_keys = []() {
+            const WORD modifier_keys[] = {
+                VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
+                VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
+                VK_MENU, VK_LMENU, VK_RMENU,
+                VK_LWIN, VK_RWIN
+            };
+            std::vector<INPUT> inputs;
+            inputs.reserve(std::size(modifier_keys));
+            for (WORD vk : modifier_keys) {
+                INPUT input{};
+                input.type = INPUT_KEYBOARD;
+                input.ki.wVk = vk;
+                input.ki.dwFlags = KEYEVENTF_KEYUP;
+                inputs.push_back(input);
             }
-            HANDLE handle = GetClipboardData(CF_UNICODETEXT);
-            if (handle != nullptr) {
-                const auto* data = static_cast<const wchar_t*>(GlobalLock(handle));
-                if (data != nullptr) {
-                    text = data;
-                    GlobalUnlock(handle);
+            if (!inputs.empty()) {
+                SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+            }
+            };
+
+            auto ensure_target_window_active = [target_window]() {
+            if (target_window == nullptr || !IsWindow(target_window)) {
+                DiagnosticsLog(L"Target window is no longer valid.");
+                return;
+            }
+            HWND foreground = GetForegroundWindow();
+            if (foreground != nullptr) {
+                HWND foreground_root = GetAncestor(foreground, GA_ROOT);
+                if (foreground_root == target_window) {
+                    return;
                 }
             }
-            CloseClipboard();
-            return text;
-        };
+            SetForegroundWindow(target_window);
+            Sleep(kExpansionTargetFocusSettleDelayMs);
+            };
 
-        auto write_clipboard_text = [](const std::wstring& text) -> bool {
-            if (!OpenClipboard(nullptr)) {
-                return false;
+            if (settle_delay > 0) {
+                Sleep(settle_delay);
             }
-            EmptyClipboard();
-            const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
-            HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
-            if (handle == nullptr) {
-                CloseClipboard();
-                return false;
+            ensure_target_window_active();
+            for (int index = 0; index < actual_delete_count; ++index) {
+                SendVirtualKeyPress(VK_BACK);
+                if (backspace_delay > 0) {
+                    Sleep(backspace_delay);
+                }
             }
-            void* memory = GlobalLock(handle);
-            memcpy(memory, text.c_str(), bytes);
-            GlobalUnlock(handle);
-            SetClipboardData(CF_UNICODETEXT, handle);
-            CloseClipboard();
-            return true;
-        };
 
-        const std::wstring original_clipboard = read_clipboard_text();
-
-        if (settle_delay > 0) {
-            Sleep(settle_delay);
-        }
-        for (int index = 0; index < actual_delete_count; ++index) {
-            send_key(VK_BACK);
-            if (backspace_delay > 0) {
-                Sleep(backspace_delay);
+            const std::wstring original_clipboard_snapshot = ReadUnicodeClipboardText();
+            RefreshClipboardHistoryFromSystem();
+            ExpansionPlan plan;
+            if (!BuildExpansionPlan(snippet, plan, original_clipboard_snapshot, original_clipboard_snapshot)) {
+                DiagnosticsLog(L"BuildExpansionPlan failed.");
+                expansion_in_progress_.store(false);
+                PostStatusText(L"Could not build the variables expansion plan.");
+                return;
             }
-        }
 
-        suppress_clipboard_history_updates_.store(true);
+            DiagnosticsLog(
+                L"Expansion plan built. actions=" + std::to_wstring(plan.actions.size()) +
+                L", cursor_relative_move=" + std::to_wstring(plan.cursor_relative_move) +
+                L", cursor_relative_move_external=" + std::to_wstring(plan.cursor_relative_move_external) +
+                L", aborted=" + std::wstring(plan.aborted ? L"true" : L"false") +
+                L", original_clipboard_length=" + std::to_wstring(original_clipboard_snapshot.size()));
 
-        if (!write_clipboard_text(content)) {
+            if (plan.aborted) {
+                DiagnosticsLog(L"Expansion aborted because variable resolution was cancelled.");
+                expansion_in_progress_.store(false);
+                PostStatusText(L"Snippet expansion cancelled.");
+                return;
+            }
+
+            bool uses_clipboard_paste = false;
+            bool has_action_variables = false;
+            bool has_original_clipboard_action = false;
+            for (const ExpansionAction& action : plan.actions) {
+                if (action.type == ExpansionActionType::Text && !action.text.empty()) {
+                    uses_clipboard_paste = true;
+                    if (action.use_original_clipboard_paste) {
+                        has_original_clipboard_action = true;
+                    }
+                } else if (action.type == ExpansionActionType::Key ||
+                           action.type == ExpansionActionType::Shortcut ||
+                           action.type == ExpansionActionType::Delay) {
+                    has_action_variables = true;
+                }
+            }
+
+            const std::wstring normalized_process_name = ToLowerSimple(target_process_name);
+            const bool target_is_word = normalized_process_name == L"winword.exe";
+            const bool use_direct_text_input = target_is_word && has_action_variables;
+            const DWORD text_completion_delay = target_is_word
+                ? kWordExpansionTextActionCompletionDelayMs
+                : kExpansionTextActionCompletionDelayMs;
+            DiagnosticsLog(target_is_word
+                ? L"Word target detected. Using direct Unicode text input for action snippet text segments."
+                : L"Non-Word target detected.");
+
+            if (use_direct_text_input && !has_original_clipboard_action) {
+                uses_clipboard_paste = false;
+            }
+
+            ClipboardSnapshot clipboard_snapshot;
+            if (uses_clipboard_paste) {
+                CaptureClipboardSnapshot(clipboard_snapshot);
+            }
+
+            bool clipboard_modified = false;
+            bool clipboard_matches_original = true;
+
+            for (size_t action_index = 0; action_index < plan.actions.size(); ++action_index) {
+                const ExpansionAction& action = plan.actions[action_index];
+                switch (action.type) {
+                case ExpansionActionType::Text:
+                    DiagnosticsLog(
+                        L"Action[" + std::to_wstring(action_index) + L"] " +
+                        std::wstring(action.use_original_clipboard_paste ? L"CLIPBOARD_ORIGINAL" : L"TEXT") +
+                        L" length=" + std::to_wstring(action.text.size()));
+                    if (!action.text.empty()) {
+                        ensure_target_window_active();
+                        release_modifier_keys();
+                        if (action.use_original_clipboard_paste) {
+                            if (!clipboard_snapshot.text.empty()) {
+                                if (!clipboard_matches_original) {
+                                    DiagnosticsLog(L"Restoring original clipboard snapshot for direct clipboard paste action.");
+                                    if (!clipboard_modified) {
+                                        suppress_clipboard_history_updates_.store(true);
+                                    }
+                                    if (!WriteUnicodeClipboardText(clipboard_snapshot.text)) {
+                                        DiagnosticsLog(L"Failed to restore original clipboard content for clipboard action.");
+                                        if (clipboard_modified) {
+                                            RestoreClipboardSnapshot(clipboard_snapshot);
+                                        }
+                                        suppress_clipboard_history_updates_.store(false);
+                                        expansion_in_progress_.store(false);
+                                        PostStatusText(L"Could not access the clipboard for variable expansion.");
+                                        return;
+                                    }
+                                    clipboard_modified = true;
+                                    clipboard_matches_original = true;
+                                }
+                                DiagnosticsLog(L"Pasting original clipboard snapshot directly.");
+                                Sleep(has_action_variables ? kExpansionKeyPostDelayMs : 6);
+                                ensure_target_window_active();
+                                send_ctrl_v();
+                                if (has_action_variables) {
+                                    Sleep(text_completion_delay);
+                                }
+                                break;
+                            }
+                        }
+                        if (use_direct_text_input) {
+                            DiagnosticsLog(L"Typing text segment directly as Unicode input.");
+                            SendUnicodeTextInput(action.text);
+                            if (has_action_variables) {
+                                Sleep(text_completion_delay);
+                            }
+                            break;
+                        }
+                        const bool can_paste_existing_clipboard =
+                            clipboard_matches_original &&
+                            !clipboard_snapshot.text.empty() &&
+                            action.text == clipboard_snapshot.text;
+                        DiagnosticsLog(can_paste_existing_clipboard
+                            ? L"Using existing clipboard content for paste."
+                            : L"Writing text segment to clipboard for paste.");
+                        if (!can_paste_existing_clipboard) {
+                            if (!clipboard_modified) {
+                                suppress_clipboard_history_updates_.store(true);
+                            }
+                            if (!WriteUnicodeClipboardText(action.text)) {
+                                DiagnosticsLog(L"Failed to prepare clipboard for text segment.");
+                                if (clipboard_modified) {
+                                    RestoreClipboardSnapshot(clipboard_snapshot);
+                                }
+                                suppress_clipboard_history_updates_.store(false);
+                                expansion_in_progress_.store(false);
+                                PostStatusText(L"Could not access the clipboard for variable expansion.");
+                                return;
+                            }
+                            clipboard_modified = true;
+                            clipboard_matches_original = false;
+                        }
+                        Sleep(has_action_variables ? kExpansionKeyPostDelayMs : 6);
+                        ensure_target_window_active();
+                        send_ctrl_v();
+                        if (has_action_variables) {
+                            Sleep(text_completion_delay);
+                        }
+                    }
+                    break;
+                case ExpansionActionType::Key:
+                    DiagnosticsLog(L"Action[" + std::to_wstring(action_index) + L"] KEY vk=" + std::to_wstring(action.vk_code));
+                    ensure_target_window_active();
+                    release_modifier_keys();
+                    Sleep(kExpansionKeyPreDelayMs);
+                    SendVirtualKeyPress(action.vk_code);
+                    Sleep(target_is_word && IsNavigationVirtualKey(action.vk_code)
+                        ? kWordExpansionNavigationKeyPostDelayMs
+                        : kExpansionKeyPostDelayMs);
+                    break;
+                case ExpansionActionType::Shortcut:
+                    DiagnosticsLog(L"Action[" + std::to_wstring(action_index) + L"] SHORTCUT modifiers=" +
+                                   std::to_wstring(action.modifiers) + L", vk=" + std::to_wstring(action.vk_code));
+                    ensure_target_window_active();
+                    release_modifier_keys();
+                    Sleep(kExpansionKeyPreDelayMs);
+                    SendShortcutChord(action.modifiers, action.vk_code);
+                    Sleep(kExpansionKeyPostDelayMs);
+                    break;
+                case ExpansionActionType::Delay:
+                    DiagnosticsLog(L"Action[" + std::to_wstring(action_index) + L"] DELAY ms=" + std::to_wstring(action.delay_ms));
+                    if (action.delay_ms > 0) {
+                        Sleep(action.delay_ms);
+                    }
+                    break;
+                case ExpansionActionType::CursorMarker:
+                    DiagnosticsLog(L"Action[" + std::to_wstring(action_index) + L"] CURSOR marker.");
+                    break;
+                }
+                if (has_action_variables) {
+                    Sleep(kExpansionActionInterDelayMs);
+                } else {
+                    Sleep(6);
+                }
+            }
+
+            if (plan.cursor_relative_move_external != 0) {
+                DiagnosticsLog(L"Applying external cursor relative move=" + std::to_wstring(plan.cursor_relative_move_external));
+                ensure_target_window_active();
+                const UINT move_vk = plan.cursor_relative_move_external > 0 ? VK_LEFT : VK_RIGHT;
+                const int move_count = std::abs(plan.cursor_relative_move_external);
+                for (int index = 0; index < move_count; ++index) {
+                    SendVirtualKeyPress(move_vk);
+                    Sleep(2);
+                }
+            }
+
+            if (clipboard_modified) {
+                DiagnosticsLog(L"Restoring clipboard after expansion.");
+                if (restore_delay > 0) {
+                    Sleep(restore_delay);
+                }
+                RestoreClipboardSnapshot(clipboard_snapshot);
+                suppress_clipboard_history_updates_.store(false);
+            }
+
+            DiagnosticsLog(L"ExpandSnippetExternally completed successfully.");
+            expansion_in_progress_.store(false);
+            PostStatusText(L"Expanded externally: " + trigger);
+        } catch (const std::exception& exception) {
+            DiagnosticsLog(L"ExpandSnippetExternally caught std::exception: " + LossyWideFromUtf8OrAnsi(exception.what()));
             suppress_clipboard_history_updates_.store(false);
             expansion_in_progress_.store(false);
-            PostStatusText(L"Could not access the clipboard for expansion.");
-            return;
+            PostStatusText(L"BlinkText diagnostics caught an expansion error.");
+        } catch (...) {
+            DiagnosticsLog(L"ExpandSnippetExternally caught an unknown exception.");
+            suppress_clipboard_history_updates_.store(false);
+            expansion_in_progress_.store(false);
+            PostStatusText(L"BlinkText diagnostics caught an unknown expansion error.");
         }
-
-        Sleep(6);
-        send_ctrl_v();
-        if (restore_delay > 0) {
-            Sleep(restore_delay);
-        }
-        write_clipboard_text(original_clipboard);
-        suppress_clipboard_history_updates_.store(false);
-        expansion_in_progress_.store(false);
-        PostStatusText(L"Expanded externally: " + trigger);
     }).detach();
 }
 
@@ -8291,9 +9667,11 @@ bool AppWindow::ExpandPreviousClipboardEntryExternally(int delete_count) {
     const std::wstring content = previous_clipboard_text_;
     if (content.empty()) {
         SetStatusText(L"Copy at least two text items first.");
+        DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally aborted: previous clipboard text is empty.");
         return false;
     }
     if (expansion_in_progress_.exchange(true)) {
+        DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally skipped because another expansion is already in progress.");
         return false;
     }
 
@@ -8301,9 +9679,12 @@ bool AppWindow::ExpandPreviousClipboardEntryExternally(int delete_count) {
     const DWORD settle_delay = static_cast<DWORD>(std::max(0, settings_.instant_settle_ms));
     const DWORD backspace_delay = static_cast<DWORD>(std::max(0, settings_.backspace_delay_ms));
     const DWORD restore_delay = static_cast<DWORD>(std::max(0, settings_.restore_clipboard_delay_ms));
+    DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally starting. delete_count=" + std::to_wstring(actual_delete_count) +
+                   L", content_length=" + std::to_wstring(content.size()));
 
     std::thread([this, content, actual_delete_count, settle_delay, backspace_delay, restore_delay]() {
-        auto send_key = [](WORD vk) {
+        try {
+            auto send_key = [](WORD vk) {
             INPUT inputs[2] = {};
             inputs[0].type = INPUT_KEYBOARD;
             inputs[0].ki.wVk = vk;
@@ -8311,9 +9692,9 @@ bool AppWindow::ExpandPreviousClipboardEntryExternally(int delete_count) {
             inputs[1].ki.wVk = vk;
             inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
             SendInput(2, inputs, sizeof(INPUT));
-        };
+            };
 
-        auto send_ctrl_v = []() {
+            auto send_ctrl_v = []() {
             INPUT inputs[4] = {};
             inputs[0].type = INPUT_KEYBOARD;
             inputs[0].ki.wVk = VK_CONTROL;
@@ -8326,37 +9707,50 @@ bool AppWindow::ExpandPreviousClipboardEntryExternally(int delete_count) {
             inputs[3].ki.wVk = VK_CONTROL;
             inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
             SendInput(4, inputs, sizeof(INPUT));
-        };
+            };
 
-        const std::wstring original_clipboard = ReadUnicodeClipboardText();
+            const std::wstring original_clipboard = ReadUnicodeClipboardText();
 
-        if (settle_delay > 0) {
-            Sleep(settle_delay);
-        }
-        for (int index = 0; index < actual_delete_count; ++index) {
-            send_key(VK_BACK);
-            if (backspace_delay > 0) {
-                Sleep(backspace_delay);
+            if (settle_delay > 0) {
+                Sleep(settle_delay);
             }
-        }
+            for (int index = 0; index < actual_delete_count; ++index) {
+                send_key(VK_BACK);
+                if (backspace_delay > 0) {
+                    Sleep(backspace_delay);
+                }
+            }
 
-        suppress_clipboard_history_updates_.store(true);
-        if (!WriteUnicodeClipboardText(content)) {
+            suppress_clipboard_history_updates_.store(true);
+            if (!WriteUnicodeClipboardText(content)) {
+                DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally failed to write clipboard text.");
+                suppress_clipboard_history_updates_.store(false);
+                expansion_in_progress_.store(false);
+                PostStatusText(L"Could not access the clipboard history item.");
+                return;
+            }
+
+            Sleep(6);
+            send_ctrl_v();
+            if (restore_delay > 0) {
+                Sleep(restore_delay);
+            }
+            WriteUnicodeClipboardText(original_clipboard);
             suppress_clipboard_history_updates_.store(false);
             expansion_in_progress_.store(false);
-            PostStatusText(L"Could not access the clipboard history item.");
-            return;
+            DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally completed successfully.");
+            PostStatusText(L"Pasted the previous clipboard item.");
+        } catch (const std::exception& exception) {
+            DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally caught std::exception: " + LossyWideFromUtf8OrAnsi(exception.what()));
+            suppress_clipboard_history_updates_.store(false);
+            expansion_in_progress_.store(false);
+            PostStatusText(L"BlinkText diagnostics caught a previous clipboard expansion error.");
+        } catch (...) {
+            DiagnosticsLog(L"ExpandPreviousClipboardEntryExternally caught an unknown exception.");
+            suppress_clipboard_history_updates_.store(false);
+            expansion_in_progress_.store(false);
+            PostStatusText(L"BlinkText diagnostics caught an unknown previous clipboard expansion error.");
         }
-
-        Sleep(6);
-        send_ctrl_v();
-        if (restore_delay > 0) {
-            Sleep(restore_delay);
-        }
-        WriteUnicodeClipboardText(original_clipboard);
-        suppress_clipboard_history_updates_.store(false);
-        expansion_in_progress_.store(false);
-        PostStatusText(L"Pasted the previous clipboard item.");
     }).detach();
     return true;
 }
@@ -8387,9 +9781,793 @@ bool AppWindow::ReplaceTrailingPreviousClipboardTrigger(std::wstring& text) cons
     return false;
 }
 
-bool AppWindow::ReplaceTrailingTrigger(std::wstring& text) const {
+bool AppWindow::BuildExpansionPlan(const Snippet& snippet, ExpansionPlan& plan, const std::wstring& clipboard_text, const std::wstring& previous_clipboard_text) const {
+    plan.actions.clear();
+    plan.cursor_relative_move = 0;
+    plan.cursor_relative_move_external = 0;
+    plan.aborted = false;
+
+    ExpansionResolveContext context;
+    context.clipboard_text = clipboard_text;
+    context.previous_clipboard_text = previous_clipboard_text;
+    context.recursion_depth = 0;
+    context.aborted = false;
+
+    const bool parsed = AppendResolvedContent(snippet.content, plan, context);
+    plan.aborted = context.aborted;
+    FinalizeExpansionPlan(plan);
+    return parsed;
+}
+
+bool AppWindow::AppendResolvedContent(const std::wstring& content, ExpansionPlan& plan, ExpansionResolveContext& context) const {
+    auto append_text_action = [&plan](const std::wstring& value, bool use_original_clipboard_paste = false) {
+        if (value.empty()) {
+            return;
+        }
+        if (!plan.actions.empty() &&
+            plan.actions.back().type == ExpansionActionType::Text &&
+            plan.actions.back().use_original_clipboard_paste == use_original_clipboard_paste) {
+            plan.actions.back().text += value;
+            return;
+        }
+        ExpansionAction action;
+        action.type = ExpansionActionType::Text;
+        action.text = value;
+        action.use_original_clipboard_paste = use_original_clipboard_paste;
+        plan.actions.push_back(std::move(action));
+    };
+
+    std::wstring text_buffer;
+    text_buffer.reserve(content.size());
+
+    for (size_t index = 0; index < content.size();) {
+        const wchar_t ch = content[index];
+        if (ch == L'\\' && index + 1 < content.size()) {
+            const wchar_t next = content[index + 1];
+            if (next == L'\\' || next == L'}') {
+                text_buffer.push_back(next);
+                index += 2;
+                continue;
+            }
+        }
+
+        if (ch == L'#' && index + 1 < content.size() && content[index + 1] == L'{') {
+            size_t token_name_end = index + 2;
+            while (token_name_end < content.size() && content[token_name_end] != L':' && content[token_name_end] != L'}') {
+                ++token_name_end;
+            }
+            const std::wstring token_name = content.substr(index + 2, token_name_end - (index + 2));
+            const bool raw_payload_until_close =
+                token_name == L"combo" ||
+                token_name == L"trim" ||
+                token_name == L"upper" ||
+                token_name == L"lower";
+
+            size_t close_index = std::wstring::npos;
+            for (size_t scan = index + 2; scan < content.size(); ++scan) {
+                if (!raw_payload_until_close && content[scan] == L'\\' && scan + 1 < content.size()) {
+                    const wchar_t escaped = content[scan + 1];
+                    if (escaped == L'\\' || escaped == L'}') {
+                        ++scan;
+                        continue;
+                    }
+                }
+                if (content[scan] == L'}') {
+                    close_index = scan;
+                    break;
+                }
+            }
+
+            if (close_index == std::wstring::npos) {
+                text_buffer.push_back(ch);
+                ++index;
+                continue;
+            }
+
+            append_text_action(text_buffer);
+            text_buffer.clear();
+
+            const std::wstring token_text = content.substr(index + 2, close_index - (index + 2));
+            ResolveVariableToken(token_text, plan, context);
+            if (context.aborted) {
+                return true;
+            }
+            index = close_index + 1;
+            continue;
+        }
+
+        text_buffer.push_back(ch);
+        ++index;
+    }
+
+    append_text_action(text_buffer);
+    return true;
+}
+
+bool AppWindow::ResolveVariableToken(const std::wstring& token_text, ExpansionPlan& plan, ExpansionResolveContext& context) const {
+    const std::wstring raw_token = L"#{" + token_text + L"}";
+
+    auto append_text_action = [&plan](const std::wstring& value, bool use_original_clipboard_paste = false) {
+        if (value.empty()) {
+            return;
+        }
+        if (!plan.actions.empty() &&
+            plan.actions.back().type == ExpansionActionType::Text &&
+            plan.actions.back().use_original_clipboard_paste == use_original_clipboard_paste) {
+            plan.actions.back().text += value;
+            return;
+        }
+        ExpansionAction action;
+        action.type = ExpansionActionType::Text;
+        action.text = value;
+        action.use_original_clipboard_paste = use_original_clipboard_paste;
+        plan.actions.push_back(std::move(action));
+    };
+
+    const size_t separator = token_text.find(L':');
+    const std::wstring variable_name = separator == std::wstring::npos ? token_text : token_text.substr(0, separator);
+    const std::wstring payload = separator == std::wstring::npos ? L"" : token_text.substr(separator + 1);
+
+    if (variable_name.empty()) {
+        append_text_action(raw_token);
+        return false;
+    }
+
+    if (variable_name == L"date") {
+        std::wstring output;
+        TryFormatDateTimeText(payload.empty() ? L"yyyy-MM-dd" : UnescapeVariableText(payload), output);
+        append_text_action(output);
+        return true;
+    }
+    if (variable_name == L"time") {
+        std::wstring output;
+        TryFormatDateTimeText(payload.empty() ? L"HH:mm:ss" : UnescapeVariableText(payload), output);
+        append_text_action(output);
+        return true;
+    }
+    if (variable_name == L"dateTime") {
+        std::wstring output;
+        TryFormatDateTimeText(payload.empty() ? L"yyyy-MM-dd HH:mm:ss" : UnescapeVariableText(payload), output);
+        append_text_action(output);
+        return true;
+    }
+    if (variable_name == L"clipboard" && separator == std::wstring::npos) {
+        append_text_action(context.clipboard_text, true);
+        return true;
+    }
+    if (variable_name == L"previousClipboard" && separator == std::wstring::npos) {
+        append_text_action(context.previous_clipboard_text);
+        return true;
+    }
+    if (variable_name == L"input") {
+        const std::wstring prompt_text = UnescapeVariableText(payload).empty() ? L"Input" : UnescapeVariableText(payload);
+        TextEntryDialogConfig dialog_config;
+        dialog_config.title = L"BlinkText Input";
+        dialog_config.prompt = prompt_text;
+        dialog_config.ok_button_label = L"OK";
+        dialog_config.dark_theme = IsDarkTheme();
+        dialog_config.multiline = true;
+        dialog_config.trim_result = false;
+        dialog_config.show_app_icon = true;
+        dialog_config.width = 580;
+        dialog_config.height = 320;
+
+        TextEntryDialogResult result;
+        HWND input_dialog_owner = nullptr;
+        HWND foreground = GetForegroundWindow();
+        if (foreground != nullptr && foreground != hwnd_) {
+            input_dialog_owner = foreground;
+        } else if (hwnd_ != nullptr && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) {
+            input_dialog_owner = hwnd_;
+        }
+
+        if (ShowTextEntryDialogWindow(input_dialog_owner, instance_, dialog_config, result) && result.accepted) {
+            append_text_action(result.text);
+        } else {
+            context.aborted = true;
+        }
+        return true;
+    }
+    if (variable_name == L"key" && separator != std::wstring::npos && !payload.empty()) {
+        UINT vk_code = 0;
+        if (!ParseVariableKeyString(UnescapeVariableText(payload), vk_code)) {
+            append_text_action(raw_token);
+            return false;
+        }
+        ExpansionAction action;
+        action.type = ExpansionActionType::Key;
+        action.vk_code = vk_code;
+        plan.actions.push_back(std::move(action));
+        return true;
+    }
+    if (variable_name == L"shortcut" && separator != std::wstring::npos && !payload.empty()) {
+        UINT modifiers = 0;
+        UINT vk_code = 0;
+        if (!ParseHotkeyString(UnescapeVariableText(payload), modifiers, vk_code)) {
+            append_text_action(raw_token);
+            return false;
+        }
+        ExpansionAction action;
+        action.type = ExpansionActionType::Shortcut;
+        action.modifiers = modifiers;
+        action.vk_code = vk_code;
+        plan.actions.push_back(std::move(action));
+        return true;
+    }
+    if (variable_name == L"delay" && separator != std::wstring::npos && !payload.empty()) {
+        const std::wstring delay_text = TrimCopy(payload);
+        if (!IsDigitsOnly(delay_text)) {
+            append_text_action(raw_token);
+            return false;
+        }
+        try {
+            ExpansionAction action;
+            action.type = ExpansionActionType::Delay;
+            action.delay_ms = static_cast<DWORD>(std::stoul(delay_text));
+            plan.actions.push_back(std::move(action));
+            return true;
+        } catch (...) {
+            append_text_action(raw_token);
+            return false;
+        }
+    }
+    if (variable_name == L"cursor" && separator == std::wstring::npos) {
+        ExpansionAction action;
+        action.type = ExpansionActionType::CursorMarker;
+        plan.actions.push_back(std::move(action));
+        return true;
+    }
+    if ((variable_name == L"combo" || variable_name == L"trim" || variable_name == L"upper" || variable_name == L"lower") &&
+        separator != std::wstring::npos && !payload.empty()) {
+        if (ResolveComboVariable(payload, plan, context, variable_name)) {
+            return true;
+        }
+        append_text_action(raw_token);
+        return false;
+    }
+    if (variable_name == L"envVar" && separator != std::wstring::npos && !payload.empty()) {
+        const std::wstring env_name = UnescapeVariableText(payload);
+        const DWORD required = GetEnvironmentVariableW(env_name.c_str(), nullptr, 0);
+        if (required > 0) {
+            std::wstring value(static_cast<size_t>(required), L'\0');
+            GetEnvironmentVariableW(env_name.c_str(), value.data(), required);
+            value.resize(static_cast<size_t>(required - 1));
+            append_text_action(value);
+        }
+        return true;
+    }
+    if (variable_name == L"powershell" && separator != std::wstring::npos && !payload.empty()) {
+        std::wstring output;
+        if (!ResolvePowerShellVariable(UnescapeVariableText(payload), output)) {
+            append_text_action(raw_token);
+            return false;
+        }
+        append_text_action(output);
+        return true;
+    }
+
+    append_text_action(raw_token);
+    return false;
+}
+
+bool AppWindow::ResolveComboVariable(const std::wstring& trigger, ExpansionPlan& plan, ExpansionResolveContext& context, const std::wstring& transform_name) const {
+    if (trigger.empty() || context.recursion_depth >= kExpansionComboMaxDepth) {
+        return false;
+    }
+
+    const Snippet* snippet = FindMatchingSnippet(trigger, true);
+    if (snippet == nullptr) {
+        return false;
+    }
+
+    ExpansionResolveContext nested_context = context;
+    nested_context.recursion_depth += 1;
+    if (transform_name.empty() || transform_name == L"combo") {
+        return AppendResolvedContent(snippet->content, plan, nested_context);
+    }
+
+    ExpansionPlan nested_plan;
+    if (!AppendResolvedContent(snippet->content, nested_plan, nested_context)) {
+        return false;
+    }
+    FinalizeExpansionPlan(nested_plan);
+    std::wstring rendered = RenderExpansionPlanForTestArea(nested_plan);
+    if (transform_name == L"trim") {
+        rendered = TrimCopy(rendered);
+    } else if (transform_name == L"upper") {
+        rendered = MapUnicodeCase(rendered, LCMAP_UPPERCASE);
+    } else if (transform_name == L"lower") {
+        rendered = MapUnicodeCase(rendered, LCMAP_LOWERCASE);
+    }
+
+    if (!rendered.empty()) {
+        ExpansionAction action;
+        action.type = ExpansionActionType::Text;
+        action.text = std::move(rendered);
+        plan.actions.push_back(std::move(action));
+    }
+    return true;
+}
+
+bool AppWindow::ResolvePowerShellVariable(const std::wstring& payload, std::wstring& output) const {
+    output.clear();
+
+    std::wstring script_path = TrimCopy(payload);
+    if (script_path.empty()) {
+        return false;
+    }
+
+    DWORD timeout_ms = 10000;
+    const size_t last_colon = script_path.rfind(L':');
+    if (last_colon != std::wstring::npos && last_colon > 1) {
+        const std::wstring timeout_text = TrimCopy(script_path.substr(last_colon + 1));
+        if (IsDigitsOnly(timeout_text)) {
+            try {
+                timeout_ms = static_cast<DWORD>(std::stoul(timeout_text));
+                script_path = TrimCopy(script_path.substr(0, last_colon));
+            } catch (...) {
+                return false;
+            }
+        }
+    }
+
+    if (script_path.size() < 4 || ToLowerCopy(script_path.substr(script_path.size() - 4)) != L".ps1" || !FileExists(script_path)) {
+        return true;
+    }
+
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.bInheritHandle = TRUE;
+
+    HANDLE read_pipe = nullptr;
+    HANDLE write_pipe = nullptr;
+    if (!CreatePipe(&read_pipe, &write_pipe, &attributes, 0)) {
+        return true;
+    }
+    SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+    HANDLE null_handle = CreateFileW(
+        L"NUL",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    std::wstring command_line = L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script_path + L"\"";
+
+    STARTUPINFOW startup_info{};
+    startup_info.cb = sizeof(startup_info);
+    startup_info.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    startup_info.wShowWindow = SW_HIDE;
+    startup_info.hStdOutput = write_pipe;
+    startup_info.hStdError = null_handle != INVALID_HANDLE_VALUE ? null_handle : write_pipe;
+    startup_info.hStdInput = null_handle != INVALID_HANDLE_VALUE ? null_handle : nullptr;
+
+    PROCESS_INFORMATION process_info{};
+    std::vector<wchar_t> command_buffer(command_line.begin(), command_line.end());
+    command_buffer.push_back(L'\0');
+
+    const BOOL created = CreateProcessW(
+        nullptr,
+        command_buffer.data(),
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &startup_info,
+        &process_info
+    );
+
+    CloseHandle(write_pipe);
+    if (null_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(null_handle);
+    }
+
+    if (!created) {
+        CloseHandle(read_pipe);
+        return true;
+    }
+
+    const ULONGLONG start_tick = GetTickCount64();
+    bool timed_out = false;
+    std::string stdout_bytes;
+
+    for (;;) {
+        DWORD available = 0;
+        while (PeekNamedPipe(read_pipe, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            char buffer[4096];
+            DWORD bytes_read = 0;
+            const DWORD to_read = std::min<DWORD>(available, static_cast<DWORD>(sizeof(buffer)));
+            if (!ReadFile(read_pipe, buffer, to_read, &bytes_read, nullptr) || bytes_read == 0) {
+                break;
+            }
+            stdout_bytes.append(buffer, buffer + bytes_read);
+            available -= bytes_read;
+        }
+
+        const DWORD wait_slice = timeout_ms == 0 ? 50 : std::min<DWORD>(50, timeout_ms);
+        const DWORD wait_result = WaitForSingleObject(process_info.hProcess, wait_slice);
+        if (wait_result == WAIT_OBJECT_0) {
+            break;
+        }
+        if (timeout_ms != 0 && GetTickCount64() - start_tick >= timeout_ms) {
+            timed_out = true;
+            TerminateProcess(process_info.hProcess, 1);
+            WaitForSingleObject(process_info.hProcess, INFINITE);
+            break;
+        }
+    }
+
+    for (;;) {
+        char buffer[4096];
+        DWORD bytes_read = 0;
+        if (!ReadFile(read_pipe, buffer, sizeof(buffer), &bytes_read, nullptr) || bytes_read == 0) {
+            break;
+        }
+        stdout_bytes.append(buffer, buffer + bytes_read);
+    }
+
+    CloseHandle(read_pipe);
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+
+    if (timed_out) {
+        return true;
+    }
+
+    output = DecodeProcessOutput(stdout_bytes);
+    return true;
+}
+
+void AppWindow::FinalizeExpansionPlan(ExpansionPlan& plan) const {
+    bool cursor_marker_seen = false;
+    size_t cursor_marker_target = 0;
+    std::wstring rendered;
+    size_t caret = 0;
+
+    auto insert_text_at_caret = [&rendered, &caret](const std::wstring& value) {
+        if (value.empty()) {
+            return;
+        }
+        rendered.insert(caret, value);
+        caret += value.size();
+    };
+
+    auto line_start_at = [&rendered](size_t position) {
+        if (position > rendered.size()) {
+            position = rendered.size();
+        }
+        if (position == 0) {
+            return static_cast<size_t>(0);
+        }
+        const size_t newline = rendered.rfind(L'\n', position - 1);
+        return newline == std::wstring::npos ? static_cast<size_t>(0) : newline + 1;
+    };
+
+    auto line_end_at = [&rendered](size_t position) {
+        if (position > rendered.size()) {
+            position = rendered.size();
+        }
+        const size_t cr = rendered.find(L'\r', position);
+        const size_t lf = rendered.find(L'\n', position);
+        const size_t boundary = std::min(cr == std::wstring::npos ? rendered.size() : cr,
+                                         lf == std::wstring::npos ? rendered.size() : lf);
+        return boundary;
+    };
+
+    auto move_caret_vertically = [&rendered, &caret, &line_start_at, &line_end_at](bool move_down) {
+        const size_t current_line_start = line_start_at(caret);
+        const size_t current_column = caret - current_line_start;
+        const size_t current_line_end = line_end_at(current_line_start);
+
+        if (move_down) {
+            if (current_line_end >= rendered.size()) {
+                return;
+            }
+            size_t next_line_start = current_line_end;
+            if (next_line_start < rendered.size() && rendered[next_line_start] == L'\r') {
+                ++next_line_start;
+            }
+            if (next_line_start < rendered.size() && rendered[next_line_start] == L'\n') {
+                ++next_line_start;
+            }
+            if (next_line_start > rendered.size()) {
+                next_line_start = rendered.size();
+            }
+            const size_t next_line_end = line_end_at(next_line_start);
+            caret = std::min(next_line_start + current_column, next_line_end);
+            return;
+        }
+
+        if (current_line_start == 0) {
+            return;
+        }
+        size_t previous_line_end = current_line_start;
+        if (previous_line_end > 0) {
+            --previous_line_end;
+        }
+        if (previous_line_end > 0 && rendered[previous_line_end] == L'\n' && rendered[previous_line_end - 1] == L'\r') {
+            --previous_line_end;
+        }
+        const size_t previous_line_start = line_start_at(previous_line_end);
+        const size_t previous_line_last = line_end_at(previous_line_start);
+        caret = std::min(previous_line_start + current_column, previous_line_last);
+    };
+
+    auto count_visible_units_up_to = [&rendered](size_t raw_limit) {
+        raw_limit = std::min(raw_limit, rendered.size());
+        size_t visible_units = 0;
+        for (size_t index = 0; index < raw_limit;) {
+            if (rendered[index] == L'\r' && index + 1 < raw_limit && rendered[index + 1] == L'\n') {
+                ++visible_units;
+                index += 2;
+                continue;
+            }
+            ++visible_units;
+            ++index;
+        }
+        return visible_units;
+    };
+
+    for (const ExpansionAction& action : plan.actions) {
+        switch (action.type) {
+        case ExpansionActionType::Text:
+            insert_text_at_caret(action.text);
+            break;
+        case ExpansionActionType::Key:
+            switch (action.vk_code) {
+            case VK_TAB:
+                insert_text_at_caret(L"\t");
+                break;
+            case VK_RETURN:
+                insert_text_at_caret(L"\r\n");
+                break;
+            case VK_SPACE:
+                insert_text_at_caret(L" ");
+                break;
+            case VK_BACK:
+                if (caret > 0 && !rendered.empty()) {
+                    rendered.erase(caret - 1, 1);
+                    --caret;
+                }
+                break;
+            case VK_DELETE:
+                if (caret < rendered.size()) {
+                    rendered.erase(caret, 1);
+                }
+                break;
+            case VK_LEFT:
+                if (caret > 0) {
+                    --caret;
+                }
+                break;
+            case VK_RIGHT:
+                if (caret < rendered.size()) {
+                    ++caret;
+                }
+                break;
+            case VK_HOME:
+                caret = line_start_at(caret);
+                break;
+            case VK_END:
+                caret = line_end_at(caret);
+                break;
+            case VK_UP:
+                move_caret_vertically(false);
+                break;
+            case VK_DOWN:
+                move_caret_vertically(true);
+                break;
+            default:
+                break;
+            }
+            break;
+        case ExpansionActionType::Shortcut:
+        case ExpansionActionType::Delay:
+            break;
+        case ExpansionActionType::CursorMarker:
+            cursor_marker_seen = true;
+            cursor_marker_target = caret;
+            break;
+        }
+    }
+
+    if (cursor_marker_seen) {
+        plan.cursor_relative_move = static_cast<int>(caret) - static_cast<int>(cursor_marker_target);
+        const size_t cursor_offset = count_visible_units_up_to(cursor_marker_target);
+        const size_t final_visible_length = count_visible_units_up_to(rendered.size());
+        const size_t final_caret_position = count_visible_units_up_to(caret);
+        plan.cursor_relative_move_external = static_cast<int>(final_caret_position) - static_cast<int>(cursor_offset);
+        DiagnosticsLog(
+            L"Cursor calculation: cursorOffset=" + std::to_wstring(cursor_offset) +
+            L", finalVisibleLength=" + std::to_wstring(final_visible_length) +
+            L", moveBackCount=" + std::to_wstring(plan.cursor_relative_move_external) +
+            L", visibleTextLengthBeforeCursor=" + std::to_wstring(cursor_offset) +
+            L", finalVisibleTextLength=" + std::to_wstring(final_visible_length) +
+            L", rawCursorOffset=" + std::to_wstring(cursor_marker_target) +
+            L", rawFinalLength=" + std::to_wstring(rendered.size()) +
+            L", rawFinalCaret=" + std::to_wstring(caret));
+    }
+
+    plan.actions.erase(
+        std::remove_if(
+            plan.actions.begin(),
+            plan.actions.end(),
+            [](const ExpansionAction& action) { return action.type == ExpansionActionType::CursorMarker; }
+        ),
+        plan.actions.end()
+    );
+}
+
+std::wstring AppWindow::RenderExpansionPlanForTestArea(const ExpansionPlan& plan, size_t* caret_position) const {
+    std::wstring rendered;
+    size_t caret = 0;
+
+    auto insert_text_at_caret = [&rendered, &caret](const std::wstring& value) {
+        if (value.empty()) {
+            return;
+        }
+        rendered.insert(caret, value);
+        caret += value.size();
+    };
+
+    auto line_start_at = [&rendered](size_t position) {
+        if (position > rendered.size()) {
+            position = rendered.size();
+        }
+        if (position == 0) {
+            return static_cast<size_t>(0);
+        }
+        const size_t newline = rendered.rfind(L'\n', position - 1);
+        return newline == std::wstring::npos ? static_cast<size_t>(0) : newline + 1;
+    };
+
+    auto line_end_at = [&rendered](size_t position) {
+        if (position > rendered.size()) {
+            position = rendered.size();
+        }
+        const size_t cr = rendered.find(L'\r', position);
+        const size_t lf = rendered.find(L'\n', position);
+        const size_t boundary = std::min(cr == std::wstring::npos ? rendered.size() : cr,
+                                         lf == std::wstring::npos ? rendered.size() : lf);
+        return boundary;
+    };
+
+    auto move_caret_vertically = [&rendered, &caret, &line_start_at, &line_end_at](bool move_down) {
+        const size_t current_line_start = line_start_at(caret);
+        const size_t current_column = caret - current_line_start;
+        const size_t current_line_end = line_end_at(current_line_start);
+
+        if (move_down) {
+            if (current_line_end >= rendered.size()) {
+                return;
+            }
+            size_t next_line_start = current_line_end;
+            if (next_line_start < rendered.size() && rendered[next_line_start] == L'\r') {
+                ++next_line_start;
+            }
+            if (next_line_start < rendered.size() && rendered[next_line_start] == L'\n') {
+                ++next_line_start;
+            }
+            if (next_line_start > rendered.size()) {
+                next_line_start = rendered.size();
+            }
+            const size_t next_line_end = line_end_at(next_line_start);
+            caret = std::min(next_line_start + current_column, next_line_end);
+            return;
+        }
+
+        if (current_line_start == 0) {
+            return;
+        }
+        size_t previous_line_end = current_line_start;
+        if (previous_line_end > 0) {
+            --previous_line_end;
+        }
+        if (previous_line_end > 0 && rendered[previous_line_end] == L'\n' && rendered[previous_line_end - 1] == L'\r') {
+            --previous_line_end;
+        }
+        const size_t previous_line_start = line_start_at(previous_line_end);
+        const size_t previous_line_last = line_end_at(previous_line_start);
+        caret = std::min(previous_line_start + current_column, previous_line_last);
+    };
+
+    for (const ExpansionAction& action : plan.actions) {
+        switch (action.type) {
+        case ExpansionActionType::Text:
+            insert_text_at_caret(action.text);
+            break;
+        case ExpansionActionType::Key:
+            switch (action.vk_code) {
+            case VK_TAB:
+                insert_text_at_caret(L"\t");
+                break;
+            case VK_RETURN:
+                insert_text_at_caret(L"\r\n");
+                break;
+            case VK_SPACE:
+                insert_text_at_caret(L" ");
+                break;
+            case VK_BACK:
+                if (caret > 0 && !rendered.empty()) {
+                    rendered.erase(caret - 1, 1);
+                    --caret;
+                }
+                break;
+            case VK_DELETE:
+                if (caret < rendered.size()) {
+                    rendered.erase(caret, 1);
+                }
+                break;
+            case VK_LEFT:
+                if (caret > 0) {
+                    --caret;
+                }
+                break;
+            case VK_RIGHT:
+                if (caret < rendered.size()) {
+                    ++caret;
+                }
+                break;
+            case VK_HOME:
+                caret = line_start_at(caret);
+                break;
+            case VK_END:
+                caret = line_end_at(caret);
+                break;
+            case VK_UP:
+                move_caret_vertically(false);
+                break;
+            case VK_DOWN:
+                move_caret_vertically(true);
+                break;
+            default:
+                break;
+            }
+            break;
+        case ExpansionActionType::Shortcut:
+        case ExpansionActionType::Delay:
+        case ExpansionActionType::CursorMarker:
+            break;
+        }
+    }
+
+    if (plan.cursor_relative_move != 0) {
+        if (plan.cursor_relative_move > 0) {
+            const size_t shift = static_cast<size_t>(plan.cursor_relative_move);
+            caret = shift > caret ? 0 : (caret - shift);
+        } else {
+            caret = std::min(rendered.size(), caret + static_cast<size_t>(-plan.cursor_relative_move));
+        }
+    }
+    if (caret_position != nullptr) {
+        *caret_position = caret;
+    }
+    return rendered;
+}
+
+bool AppWindow::ReplaceTrailingTrigger(std::wstring& text, size_t* caret_position) const {
     if (const Snippet* snippet = FindMatchingSnippet(text)) {
-        text.replace(text.size() - snippet->trigger.size(), snippet->trigger.size(), snippet->content);
+        ExpansionPlan plan;
+        const std::wstring clipboard_snapshot = ReadUnicodeClipboardText();
+        if (!BuildExpansionPlan(*snippet, plan, clipboard_snapshot, clipboard_snapshot)) {
+            return false;
+        }
+        if (plan.aborted) {
+            return false;
+        }
+        size_t rendered_caret = 0;
+        const std::wstring rendered = RenderExpansionPlanForTestArea(plan, &rendered_caret);
+        const size_t replace_start = text.size() - snippet->trigger.size();
+        text.replace(replace_start, snippet->trigger.size(), rendered);
+        if (caret_position != nullptr) {
+            *caret_position = replace_start + rendered_caret;
+        }
         return true;
     }
     return false;
@@ -8400,11 +10578,14 @@ void AppWindow::ExpandTestAreaIfNeeded() {
         return;
     }
 
+    RefreshClipboardHistoryFromSystem();
     std::wstring text = ReadWindowText(test_edit_);
     bool replaced = false;
+    size_t caret_position = text.size();
 
     if (ReplaceTrailingPreviousClipboardTrigger(text)) {
         replaced = true;
+        caret_position = text.size();
     } else if (settings_.trigger_mode == L"separator") {
         struct SeparatorCandidate {
             std::wstring name;
@@ -8441,6 +10622,7 @@ void AppWindow::ExpandTestAreaIfNeeded() {
                         previous_clipboard_text_
                     );
                     replaced = true;
+                    caret_position = text.size();
                     break;
                 }
                 if (settings_.use_previous_clipboard_slash_trigger &&
@@ -8456,21 +10638,35 @@ void AppWindow::ExpandTestAreaIfNeeded() {
                         previous_clipboard_text_
                     );
                     replaced = true;
+                    caret_position = text.size();
                     break;
                 }
             }
             if (const Snippet* snippet = FindMatchingSnippet(without_separator)) {
+                ExpansionPlan plan;
+                const std::wstring clipboard_snapshot = ReadUnicodeClipboardText();
+                if (!BuildExpansionPlan(*snippet, plan, clipboard_snapshot, clipboard_snapshot)) {
+                    return;
+                }
+                if (plan.aborted) {
+                    SetStatusText(L"Snippet expansion cancelled.");
+                    return;
+                }
+                size_t rendered_caret = 0;
+                const std::wstring rendered = RenderExpansionPlanForTestArea(plan, &rendered_caret);
+                const size_t replace_start = text.size() - snippet->trigger.size() - candidate.text.size();
                 text.replace(
-                    text.size() - snippet->trigger.size() - candidate.text.size(),
+                    replace_start,
                     snippet->trigger.size() + candidate.text.size(),
-                    snippet->content
+                    rendered
                 );
                 replaced = true;
+                caret_position = replace_start + rendered_caret;
                 break;
             }
         }
     } else {
-        replaced = ReplaceTrailingTrigger(text);
+        replaced = ReplaceTrailingTrigger(text, &caret_position);
     }
 
     if (!replaced) {
@@ -8480,7 +10676,8 @@ void AppWindow::ExpandTestAreaIfNeeded() {
     updating_test_area_ = true;
     WriteWindowText(test_edit_, text);
     updating_test_area_ = false;
-    SendMessageW(test_edit_, EM_SETSEL, static_cast<WPARAM>(text.size()), static_cast<LPARAM>(text.size()));
+    const size_t safe_caret_position = std::min(caret_position, text.size());
+    SendMessageW(test_edit_, EM_SETSEL, static_cast<WPARAM>(safe_caret_position), static_cast<LPARAM>(safe_caret_position));
     SetStatusText(L"Expanded in C++ Test Area.");
 }
 
@@ -8798,6 +10995,23 @@ void AppWindow::ShowEditContextMenu(HWND control, POINT screen_point) {
     if (insert_unicode_submenu != nullptr) {
         ApplyPopupMenuTheme(insert_unicode_submenu, surface_brush_);
     }
+    HMENU variables_submenu = nullptr;
+    HMENU variables_datetime_submenu = nullptr;
+    HMENU variables_combo_submenu = nullptr;
+    if (control == content_edit_) {
+        variables_submenu = CreatePopupMenu();
+        variables_datetime_submenu = CreatePopupMenu();
+        variables_combo_submenu = CreatePopupMenu();
+        if (variables_submenu != nullptr) {
+            ApplyPopupMenuTheme(variables_submenu, surface_brush_);
+        }
+        if (variables_datetime_submenu != nullptr) {
+            ApplyPopupMenuTheme(variables_datetime_submenu, surface_brush_);
+        }
+        if (variables_combo_submenu != nullptr) {
+            ApplyPopupMenuTheme(variables_combo_submenu, surface_brush_);
+        }
+    }
 
     std::vector<std::unique_ptr<PopupMenuItemData>> menu_items;
     auto append_menu_item = [&](HMENU target_menu, UINT id, const std::wstring& text, bool enabled, bool destructive = false, bool separator = false, HMENU submenu = nullptr) {
@@ -8852,6 +11066,44 @@ void AppWindow::ShowEditContextMenu(HWND control, POINT screen_point) {
         append_menu_item(menu, kEditMenuInsertUnicodeControl, L"Insert Unicode control character", true, false, false, insert_unicode_submenu);
     } else {
         append_menu_item(menu, kEditMenuInsertUnicodeControl, L"Insert Unicode control character", false);
+    }
+    if (variables_submenu != nullptr) {
+        if (variables_datetime_submenu != nullptr) {
+            append_menu_item(variables_datetime_submenu, kEditMenuVariableDate, L"Date", true);
+            append_menu_item(variables_datetime_submenu, kEditMenuVariableTime, L"Time", true);
+            append_menu_item(variables_datetime_submenu, kEditMenuVariableDateAndTime, L"Date & Time", true);
+            append_menu_item(variables_datetime_submenu, kEditMenuVariableCustomDateTime, L"Custom Date and Time", true);
+        }
+        if (variables_combo_submenu != nullptr) {
+            append_menu_item(variables_combo_submenu, kEditMenuVariableComboPlain, L"Combo", true);
+            append_menu_item(variables_combo_submenu, kEditMenuVariableComboTrim, L"Trim Combo", true);
+            append_menu_item(variables_combo_submenu, kEditMenuVariableComboUpper, L"Upper Combo", true);
+            append_menu_item(variables_combo_submenu, kEditMenuVariableComboLower, L"Lower Combo", true);
+        }
+
+        append_menu_item(variables_submenu, kEditMenuVariableClipboard, L"Content Clipboard", true);
+        append_menu_item(variables_submenu, kEditMenuVariablePreviousClipboard, L"Previous Clipboard", true);
+        append_menu_item(variables_submenu, 0, L"", false, false, true);
+        if (variables_datetime_submenu != nullptr) {
+            append_menu_item(variables_submenu, kEditMenuVariableDateTime, L"Date/Time", true, false, false, variables_datetime_submenu);
+        } else {
+            append_menu_item(variables_submenu, kEditMenuVariableDateTime, L"Date/Time", false);
+        }
+        append_menu_item(variables_submenu, kEditMenuVariableKey, L"Key", true);
+        append_menu_item(variables_submenu, kEditMenuVariableShortcut, L"Shortcut", true);
+        append_menu_item(variables_submenu, kEditMenuVariableDelay, L"Delay", true);
+        append_menu_item(variables_submenu, kEditMenuVariableCursor, L"Position Cursor", true);
+        if (variables_combo_submenu != nullptr) {
+            append_menu_item(variables_submenu, kEditMenuVariableCombo, L"Combo", true, false, false, variables_combo_submenu);
+        } else {
+            append_menu_item(variables_submenu, kEditMenuVariableCombo, L"Combo", false);
+        }
+        append_menu_item(variables_submenu, kEditMenuVariableEnvVar, L"Variable Environment", true);
+        append_menu_item(variables_submenu, kEditMenuVariablePowerShell, L"Script PowerShell", true);
+        append_menu_item(variables_submenu, kEditMenuVariableInput, L"Input User", true);
+        append_menu_item(variables_submenu, 0, L"", false, false, true);
+        append_menu_item(variables_submenu, kEditMenuVariablesAbout, L"Variables About", true);
+        append_menu_item(menu, kEditMenuVariables, L"Variables", true, false, false, variables_submenu);
     }
     append_menu_item(menu, kEditMenuOpenIme, L"Open IME", true);
     append_menu_item(menu, kEditMenuReconversion, L"Reconversion", true);
@@ -9463,6 +11715,8 @@ bool AppWindow::ParseHotkeyString(const std::wstring& hotkey, UINT& modifiers, U
                 vk_code = VK_RETURN;
             } else if (token == L"esc" || token == L"escape") {
                 vk_code = VK_ESCAPE;
+            } else if (token == L"backspace" || token == L"bksp" || token == L"bs") {
+                vk_code = VK_BACK;
             } else if (token == L"insert" || token == L"ins") {
                 vk_code = VK_INSERT;
             } else if (token == L"delete" || token == L"del") {
@@ -9495,6 +11749,152 @@ bool AppWindow::ParseHotkeyString(const std::wstring& hotkey, UINT& modifiers, U
     }
 
     return vk_code != 0;
+}
+
+bool AppWindow::ParseVariableKeyString(const std::wstring& key_name, UINT& vk_code) {
+    vk_code = 0;
+
+    const std::wstring token = ToLowerCopy(TrimCopy(key_name));
+    if (token.empty()) {
+        return false;
+    }
+
+    if (token.size() == 1) {
+        const wchar_t ch = token.front();
+        if (ch >= L'a' && ch <= L'z') {
+            vk_code = static_cast<UINT>(towupper(ch));
+            return true;
+        }
+        if (ch >= L'0' && ch <= L'9') {
+            vk_code = static_cast<UINT>(ch);
+            return true;
+        }
+        return false;
+    }
+
+    if (token.size() >= 2 && token.front() == L'f') {
+        try {
+            const int number = std::stoi(token.substr(1));
+            if (number >= 1 && number <= 24) {
+                vk_code = static_cast<UINT>(VK_F1 + number - 1);
+                return true;
+            }
+        } catch (...) {
+            return false;
+        }
+        return false;
+    }
+
+    struct KeyAlias {
+        const wchar_t* name;
+        UINT vk_code;
+    };
+
+    static const KeyAlias kKeyAliases[] = {
+        {L"space", VK_SPACE},
+        {L"tab", VK_TAB},
+        {L"enter", VK_RETURN},
+        {L"return", VK_RETURN},
+        {L"insert", VK_INSERT},
+        {L"ins", VK_INSERT},
+        {L"delete", VK_DELETE},
+        {L"del", VK_DELETE},
+        {L"home", VK_HOME},
+        {L"end", VK_END},
+        {L"pageup", VK_PRIOR},
+        {L"pgup", VK_PRIOR},
+        {L"pagedown", VK_NEXT},
+        {L"pgdn", VK_NEXT},
+        {L"up", VK_UP},
+        {L"down", VK_DOWN},
+        {L"left", VK_LEFT},
+        {L"right", VK_RIGHT},
+        {L"esc", VK_ESCAPE},
+        {L"escape", VK_ESCAPE},
+        {L"printscreen", VK_SNAPSHOT},
+        {L"prtsc", VK_SNAPSHOT},
+        {L"pause", VK_PAUSE},
+        {L"numlock", VK_NUMLOCK},
+        {L"volumemute", VK_VOLUME_MUTE},
+        {L"volumeup", VK_VOLUME_UP},
+        {L"volumedown", VK_VOLUME_DOWN},
+        {L"medianexttrack", VK_MEDIA_NEXT_TRACK},
+        {L"mediaprevioustrack", VK_MEDIA_PREV_TRACK},
+        {L"mediastop", VK_MEDIA_STOP},
+        {L"mediaplaypause", VK_MEDIA_PLAY_PAUSE},
+        {L"mediaselect", VK_LAUNCH_MEDIA_SELECT},
+        {L"windows", VK_LWIN},
+        {L"win", VK_LWIN},
+        {L"control", VK_CONTROL},
+        {L"ctrl", VK_CONTROL},
+        {L"alt", VK_MENU},
+        {L"shift", VK_SHIFT},
+    };
+
+    for (const auto& alias : kKeyAliases) {
+        if (token == alias.name) {
+            vk_code = alias.vk_code;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::wstring AppWindow::UnescapeVariableText(const std::wstring& value) {
+    std::wstring unescaped;
+    unescaped.reserve(value.size());
+    for (size_t index = 0; index < value.size(); ++index) {
+        const wchar_t ch = value[index];
+        if (ch == L'\\' && index + 1 < value.size()) {
+            const wchar_t next = value[index + 1];
+            if (next == L'\\' || next == L'}') {
+                unescaped.push_back(next);
+                ++index;
+                continue;
+            }
+        }
+        unescaped.push_back(ch);
+    }
+    return unescaped;
+}
+
+bool AppWindow::TryFormatDateTimeText(const std::wstring& format, std::wstring& output) {
+    SYSTEMTIME local_time{};
+    GetLocalTime(&local_time);
+
+    auto replace_all = [](std::wstring& target, const std::wstring& from, const std::wstring& to) {
+        if (from.empty()) {
+            return;
+        }
+        size_t position = 0;
+        while ((position = target.find(from, position)) != std::wstring::npos) {
+            target.replace(position, from.size(), to);
+            position += to.size();
+        }
+    };
+
+    wchar_t year[8] = {};
+    wchar_t month[4] = {};
+    wchar_t day[4] = {};
+    wchar_t hour[4] = {};
+    wchar_t minute[4] = {};
+    wchar_t second[4] = {};
+    swprintf_s(year, L"%04u", static_cast<unsigned>(local_time.wYear));
+    swprintf_s(month, L"%02u", static_cast<unsigned>(local_time.wMonth));
+    swprintf_s(day, L"%02u", static_cast<unsigned>(local_time.wDay));
+    swprintf_s(hour, L"%02u", static_cast<unsigned>(local_time.wHour));
+    swprintf_s(minute, L"%02u", static_cast<unsigned>(local_time.wMinute));
+    swprintf_s(second, L"%02u", static_cast<unsigned>(local_time.wSecond));
+
+    output = format;
+    replace_all(output, L"yyyy", year);
+    replace_all(output, L"MM", month);
+    replace_all(output, L"dd", day);
+    replace_all(output, L"HH", hour);
+    replace_all(output, L"mm", minute);
+    replace_all(output, L"ss", second);
+    return true;
 }
 
 std::wstring AppWindow::TrimCopy(const std::wstring& value) {
@@ -9572,6 +11972,62 @@ std::wstring AppWindow::HotkeyKeyName(UINT vk_code) {
         return L"right";
     default:
         return L"";
+    }
+}
+
+void AppWindow::SendVirtualKeyPress(UINT vk_code) {
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = static_cast<WORD>(vk_code);
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = static_cast<WORD>(vk_code);
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
+void AppWindow::SendShortcutChord(UINT modifiers, UINT vk_code) {
+    std::vector<WORD> modifier_keys;
+    if ((modifiers & MOD_CONTROL) != 0) {
+        modifier_keys.push_back(VK_CONTROL);
+    }
+    if ((modifiers & MOD_SHIFT) != 0) {
+        modifier_keys.push_back(VK_SHIFT);
+    }
+    if ((modifiers & MOD_ALT) != 0) {
+        modifier_keys.push_back(VK_MENU);
+    }
+    if ((modifiers & MOD_WIN) != 0) {
+        modifier_keys.push_back(VK_LWIN);
+    }
+
+    std::vector<INPUT> inputs;
+    inputs.reserve(modifier_keys.size() * 2 + 2);
+    for (WORD modifier_key : modifier_keys) {
+        INPUT down{};
+        down.type = INPUT_KEYBOARD;
+        down.ki.wVk = modifier_key;
+        inputs.push_back(down);
+    }
+
+    INPUT key_down{};
+    key_down.type = INPUT_KEYBOARD;
+    key_down.ki.wVk = static_cast<WORD>(vk_code);
+    inputs.push_back(key_down);
+
+    INPUT key_up = key_down;
+    key_up.ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs.push_back(key_up);
+
+    for (auto it = modifier_keys.rbegin(); it != modifier_keys.rend(); ++it) {
+        INPUT up{};
+        up.type = INPUT_KEYBOARD;
+        up.ki.wVk = *it;
+        up.ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs.push_back(up);
+    }
+
+    if (!inputs.empty()) {
+        SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
     }
 }
 
