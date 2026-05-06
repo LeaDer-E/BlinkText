@@ -2,12 +2,35 @@
 setlocal EnableExtensions EnableDelayedExpansion
 pushd "%~dp0"
 
-set "APP_NAME=BlinkText"
-set "APP_VERSION=1.1.0"
+set "VERSION_FILE=00 - BlinkText_Version.issinc"
+set "APP_NAME="
+set "APP_VERSION="
 set "SRC_DIR=src"
 set "DIST_DIR=dist"
 set "RELEASE_DIR=build_release"
 set "OUT_DIR=%DIST_DIR%\BlinkText-Portable"
+
+if not exist "%VERSION_FILE%" (
+    echo [ERROR] Missing version file: %VERSION_FILE%
+    goto :fail
+)
+
+for /f "tokens=3" %%A in ('findstr /B /C:"#define MyAppName " "%VERSION_FILE%"') do (
+    if not defined APP_NAME set "APP_NAME=%%~A"
+)
+for /f "tokens=3" %%A in ('findstr /B /C:"#define MyAppVersion " "%VERSION_FILE%"') do (
+    if not defined APP_VERSION set "APP_VERSION=%%~A"
+)
+
+if not defined APP_NAME (
+    echo [ERROR] Failed to read MyAppName from %VERSION_FILE%.
+    goto :fail
+)
+if not defined APP_VERSION (
+    echo [ERROR] Failed to read MyAppVersion from %VERSION_FILE%.
+    goto :fail
+)
+
 set "TEMP_BUILD_DIR=%RELEASE_DIR%\_build"
 set "RELEASE_EXE=%RELEASE_DIR%\%APP_NAME%.exe"
 set "OUT_EXE=%OUT_DIR%\%APP_NAME%.exe"
@@ -92,10 +115,6 @@ echo [5/6] Preparing portable data files...
 set "SOURCE_SNIPPETS="
 for %%F in (
     "%APP_NAME%_Snippets.json"
-    "build\%SNIPPETS_FILE%"
-    "build_diagnostics\%SNIPPETS_FILE%"
-    "build_keyrollback\%SNIPPETS_FILE%"
-    "build_keyspeed\%SNIPPETS_FILE%"
 ) do (
     if not defined SOURCE_SNIPPETS if exist %%~F set "SOURCE_SNIPPETS=%%~F"
 )
@@ -103,8 +122,7 @@ if defined SOURCE_SNIPPETS (
     copy /y "%SOURCE_SNIPPETS%" "%RELEASE_DIR%\%SNIPPETS_FILE%" >nul
     echo   Included %SNIPPETS_FILE%
 ) else (
-    echo {^"settings^":{},^"groups^":[],^"snippets^":[]}>"%RELEASE_DIR%\%SNIPPETS_FILE%"
-    echo   Created fallback %SNIPPETS_FILE%
+    echo   No %SNIPPETS_FILE% found. Portable build will rely on in-app fallback sample data.
 )
 
 echo [5.5/6] Preparing portable mirror...
@@ -128,6 +146,11 @@ if errorlevel 1 (
 )
 
 if exist "%TEMP_BUILD_DIR%" rmdir /s /q "%TEMP_BUILD_DIR%"
+
+echo [6.5/6] Finalizing installer release folder...
+for %%F in ("%OUT_DIR%\*") do (
+    if exist "%%~fF" copy /y "%%~fF" "%RELEASE_DIR%\" >nul
+)
 
 echo.
 echo [DONE] Portable package is ready.

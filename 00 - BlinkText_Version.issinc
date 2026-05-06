@@ -1,0 +1,4 @@
+#define MyAppName "BlinkText"
+#define MyAppVersion "1.1.0"
+#define MyAppPublisher "BlinkText"
+#define MyAppExeName "BlinkText.exe"

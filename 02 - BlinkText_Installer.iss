@@ -1,7 +1,4 @@
-#define MyAppName "BlinkText"
-#define MyAppVersion "1.1.0"
-#define MyAppPublisher "BlinkText"
-#define MyAppExeName "BlinkText.exe"
+#include "00 - BlinkText_Version.issinc"
 
 [Setup]
 AppId={{B7D0E6B9-7B7D-4E7A-8A2D-BLINKTEXT001}}
@@ -23,6 +20,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 DisableProgramGroupPage=yes
 DisableReadyPage=no
 DisableFinishedPage=no
+CloseApplications=yes
+CloseApplicationsFilter={#MyAppExeName}
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -31,7 +31,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "build_release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "build_release\BlinkText.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build_release\BlinkText_Snippets.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist skipifsourcedoesntexist
+Source: "build_release\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "build_release\libgcc_s_dw2-1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "build_release\libstdc++-6.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "build_release\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "build_release\libssp-0.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\BlinkText"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
@@ -39,3 +45,24 @@ Name: "{autodesktop}\BlinkText"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch BlinkText"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure ForceCloseBlinkTextIfRunning();
+var
+  ResultCode: Integer;
+begin
+  Exec(
+    ExpandConstant('{cmd}'),
+    '/C taskkill /IM "{#MyAppExeName}" /F /T >NUL 2>NUL',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    ForceCloseBlinkTextIfRunning();
+end;
