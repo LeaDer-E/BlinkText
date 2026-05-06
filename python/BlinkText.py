@@ -46,7 +46,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CPP_DIR = os.path.dirname(BASE_DIR)
 CPP_SRC_DIR = os.path.join(CPP_DIR, "src")
 CPP_ASSET_DIR = os.path.join(CPP_SRC_DIR, "assets")
-CONFIG_FILE = os.path.join(BASE_DIR, "snippets_v9.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "BlinkText_Snippets.json")
 ASSET_DIRS = [
     BASE_DIR,
     os.path.join(BASE_DIR, "assets"),
