@@ -133,7 +133,7 @@ Examples:
 
 Full documentation:
 
-- [Wiki / Variables](./Wiki/Variables.md)
+- [Wiki / Variables](https://github.com/LeaDer-E/BlinkText/wiki/Variables)
 
 ## Application Layout
 
@@ -254,7 +254,7 @@ Supported separator keys:
 
 More details:
 
-- [Wiki / Trigger Modes](./Wiki/Trigger%20Modes.md)
+- [Wiki / Trigger Modes](https://github.com/LeaDer-E/BlinkText/wiki/Trigger-Modes)
 
 ## Clipboard Features
 
@@ -270,7 +270,7 @@ Clipboard behavior is designed to stay stable during one expansion by using a sn
 
 More details:
 
-- [Wiki / Clipboard Features](./Wiki/Clipboard%20Features.md)
+- [Wiki / Clipboard Features](https://github.com/LeaDer-E/BlinkText/wiki/Clipboard-Features)
 
 ## Import and Export
 
@@ -309,7 +309,7 @@ Suggested export names:
 
 More details:
 
-- [Wiki / Import and Export](./Wiki/Import%20and%20Export.md)
+- [Wiki / Import and Export](https://github.com/LeaDer-E/BlinkText/wiki/Import-and-Export)
 
 ## Context Menus
 
@@ -380,7 +380,7 @@ BlinkText also adds features that Beeftext does not expose in the same way, such
 
 More details:
 
-- [Wiki / Compatibility with Beeftext](./Wiki/Compatibility%20with%20Beeftext.md)
+- [Wiki / Compatibility with Beeftext](https://github.com/LeaDer-E/BlinkText/wiki/Compatibility-with-Beeftext)
 
 ## About
 
@@ -461,14 +461,14 @@ g++ -std=c++17 -O2 -Wall -Wextra `
 Project documentation currently includes:
 
 - [README.md](./README.md)
-- [Wiki / Home](./Wiki/Home.md)
-- [Wiki / Variables](./Wiki/Variables.md)
-- [Wiki / Import and Export](./Wiki/Import%20and%20Export.md)
-- [Wiki / Trigger Modes](./Wiki/Trigger%20Modes.md)
-- [Wiki / Clipboard Features](./Wiki/Clipboard%20Features.md)
-- [Wiki / Compatibility with Beeftext](./Wiki/Compatibility%20with%20Beeftext.md)
-- [Wiki / Building BlinkText](./Wiki/Building%20BlinkText.md)
-- [Wiki / FAQ](./Wiki/FAQ.md)
+- [Wiki / Home](https://github.com/LeaDer-E/BlinkText/wiki)
+- [Wiki / Variables](https://github.com/LeaDer-E/BlinkText/wiki/Variables)
+- [Wiki / Import and Export](https://github.com/LeaDer-E/BlinkText/wiki/Import-and-Export)
+- [Wiki / Trigger Modes](https://github.com/LeaDer-E/BlinkText/wiki/Trigger-Modes)
+- [Wiki / Clipboard Features](https://github.com/LeaDer-E/BlinkText/wiki/Clipboard-Features)
+- [Wiki / Compatibility with Beeftext](https://github.com/LeaDer-E/BlinkText/wiki/Compatibility-with-Beeftext)
+- [Wiki / Building BlinkText](https://github.com/LeaDer-E/BlinkText/wiki/Building-BlinkText)
+- [Wiki / FAQ](https://github.com/LeaDer-E/BlinkText/wiki/FAQ)
 
 ## Release Version Source
 
