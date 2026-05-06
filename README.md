@@ -32,15 +32,7 @@ This section is reserved for a short GIF demo of BlinkText in action.
 
 This section is reserved for the main BlinkText interface screenshot.
 
-Suggested future file:
-
-- `docs/media/blinktext-ui.png`
-
-Example placeholder:
-
-```md
 ![BlinkText UI](docs/media/blinktext-ui.png)
-```
 
 ## Why BlinkText
 
