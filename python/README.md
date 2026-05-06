@@ -1,5 +1,6 @@
 # BlinkText Python Edition
 
+> The Python edition of BlinkText is an experimental port of the main application. It already supports many core features, but it is not yet fully equivalent to the stable C++ release and may still behave inconsistently in some external applications.
 This folder contains the Python edition of BlinkText.
 
 Important status:
@@ -94,9 +95,5 @@ The Python version is designed to reuse the same BlinkText assets where possible
 
 This Python edition aims to follow the current BlinkText behavior and variable system, but it should not be considered a perfect one-to-one replacement for the C++ release yet.
 
-## Summary
 
-If you are uploading this folder to GitHub, the safest description is:
-
-> The Python edition of BlinkText is an experimental port of the main application. It already supports many core features, but it is not yet fully equivalent to the stable C++ release and may still behave inconsistently in some external applications.
 
