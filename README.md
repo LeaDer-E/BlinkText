@@ -25,15 +25,8 @@ Typical release assets:
 
 This section is reserved for a short GIF demo of BlinkText in action.
 
-Suggested future file:
-
-- `docs/media/blinktext-demo.gif`
-
-Example placeholder:
-
-```md
 ![BlinkText Demo](docs/media/blinktext-demo.gif)
-```
+
 
 ## Screenshot
 
