@@ -4,6 +4,10 @@ BlinkText is a fast, local text expansion tool for Windows.
 
 It is built for instant typing workflows, reusable snippets, writing shortcuts, clipboard-aware expansions, and dynamic variables while staying fully offline, lightweight, and practical for everyday use.
 
+## Development
+
+BlinkText was built with the assistance of AI tools (including Codex) to accelerate development, improve reliability, and iterate on features more efficiently.
+
 ## Download
 
 Downloads are published through GitHub Releases:
@@ -529,6 +533,7 @@ BlinkText/
   python/
     BlinkText.py
     requirements.txt
+    README.md
 ```
 
 ## Developer
