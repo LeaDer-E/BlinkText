@@ -376,7 +376,7 @@ More details:
 The built-in `Info` dialog currently presents:
 
 ```text
-BlinkText v1.0
+BlinkText
 Fast, local text expansion tool designed for instant, reliable typing with zero delay.
 
 Key Features
