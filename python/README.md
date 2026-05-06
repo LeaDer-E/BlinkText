@@ -83,7 +83,7 @@ python BlinkText.py
 - `requirements.txt`  
   Python dependencies
 
-- `snippets_v9.json`  
+- `BlinkText_Snippets.json`  
   Snippet data file used by the Python edition
 
 ## Notes About Assets
